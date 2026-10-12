@@ -5,9 +5,11 @@
 #include "host_callbacks.h"
 #include "audio.h"
 #include "video.h"
+#include "sps_probe.h"
 
 #include <psp2/kernel/processmgr.h>
 #include <psp2/net/netctl.h>
+#include <stdio.h>
 #include <string.h>
 
 #define AV_DIAG_LOG_INTERVAL_US (5 * 1000 * 1000ULL)
@@ -41,6 +43,45 @@
 /* Two shots bracket the drain window observed on hardware; a single shot risks landing
  * inside the same failure window as the resume burst. */
 #define SUSPEND_RESYNC_SHOTS 2
+
+/* PIPE/DECHOLD: tries at a consistent copy of the decode thread's published window, and the
+ * last copy that was won (printed again if a window's copy fails). Reset with the stream. */
+#define DECHOLD_READ_ATTEMPTS 4
+static DecHoldWindow dechold_last;
+
+/* PIPE/RECVBUF: same scheme for the receive thread's published window. Reset with the stream. */
+#define RECVBUF_READ_ATTEMPTS 4
+#define RECVBUF_BUSY_PERMILLE_PER_PCT 10 /* busy_permille is in tenths of a percent */
+static ChiakiTakionRecvbufWindow recvbuf_last;
+
+/* PIPE/CONSOLE: tries at a consistent copy of the stream connection's console info; the
+ * previous copy (baseline for the per-window deltas, and what is printed again if a copy fails);
+ * whether PIPE/CONSOLE_TS was already printed this session. All reset with the stream. */
+#define CONSOLE_READ_ATTEMPTS 4
+static ChiakiConsoleInfo console_prev;
+static bool console_ts_printed;
+
+/* PIPE/SPS and PIPE/SPS_REPEAT: the probe version at the last look (a new copy is taken only when
+ * it moved), whether the once-per-session PIPE/SPS line was printed, the repeat counts already
+ * printed and when. All reset with the stream. */
+#define SPS_READ_ATTEMPTS 4
+#define SPS_REPEAT_MIN_INTERVAL_US 1000000ULL /* at most one PIPE/SPS_REPEAT per window */
+#define SPS_HEX_BUF_SIZE (SPS_PROBE_CAP * 2 + 1)
+#define SPS_CUT_BUF_SIZE 32
+#define SPS_OPT_BUF_SIZE 16
+static uint32_t sps_seen_version;
+static bool sps_line_printed;
+static uint32_t sps_repeat_printed_seen;
+static uint32_t sps_repeat_printed_differed;
+static uint64_t sps_repeat_last_us;
+/* Text buffers of the PIPE/CONSOLE line: the type:count list (overflow is shown as "..."), one
+ * formatted number, and the hex dump of the first periodic-timestamp message. */
+#define CONSOLE_TYPES_BUF_SIZE 256
+#define CONSOLE_NUM_BUF_SIZE 32
+#define CONSOLE_TS_HEX_BUF_SIZE (CHIAKI_CONSOLE_INFO_FIRST_TS_CAP * 2 + 1)
+/* rtt is a double of unverified unit; small steps must be visible, so six decimals. */
+#define CONSOLE_RTT_DECIMALS 6
+#define CONSOLE_LOSS_DECIMALS 4
 
 /* Insertion sort for the bounded (<= LATENCY_WINDOW_SAMPLE_CAP) per-window latency sample
  * array. O(n^2) worst case is trivial at this size (<=64 elements) and this runs once per
@@ -259,6 +300,26 @@ void host_metrics_reset_stream(bool preserve_recovery_state) {
   context.stream.display_dropped_n = 0;
   context.stream.display_paced_n = 0;
 
+  memset(&context.stream.press_acc, 0, sizeof(context.stream.press_acc));
+  memset(&context.stream.press_pub, 0, sizeof(context.stream.press_pub));
+  context.stream.press_seen_presses = 0;
+  memset(&context.stream.press_seen, 0, sizeof(context.stream.press_seen));
+  context.stream.press_total_presses = 0;
+  context.stream.press_total_samples = 0;
+
+  context.stream.dechold_lock = 0;
+  memset(&context.stream.dechold_pub, 0, sizeof(context.stream.dechold_pub));
+  memset(&dechold_last, 0, sizeof(dechold_last));
+  memset(&recvbuf_last, 0, sizeof(recvbuf_last));
+  recv_probe_reset_report();
+  memset(&console_prev, 0, sizeof(console_prev));
+  console_ts_printed = false;
+  sps_seen_version = 0;
+  sps_line_printed = false;
+  sps_repeat_printed_seen = 0;
+  sps_repeat_printed_differed = 0;
+  sps_repeat_last_us = 0;
+
   context.stream.input_latency_p50_us = 0;
   context.stream.input_latency_p95_us = 0;
   context.stream.input_latency_max_us = 0;
@@ -303,6 +364,228 @@ void host_metrics_reset_stream(bool preserve_recovery_state) {
   context.stream.stop_requested_by_user = false;
   context.stream.teardown_in_progress = false;
   vitavideo_hide_poor_net_indicator();
+}
+
+/* Window figure of a session-total counter: the growth since the previous copy. A counter that
+ * went down means the stream connection was re-initialised, so its value is the whole growth. */
+static uint32_t console_counter_delta(uint32_t cur, uint32_t prev) {
+  return cur >= prev ? cur - prev : cur;
+}
+
+/* Formats a value the console may never have sent: "-" when it did not, never a made-up zero. */
+static void console_format_double(char *out, size_t size, bool seen, int decimals, double value) {
+  if (seen)
+    snprintf(out, size, "%.*f", decimals, value);
+  else
+    snprintf(out, size, "-");
+}
+
+static void console_format_u64(char *out, size_t size, bool seen, uint64_t value) {
+  if (seen)
+    snprintf(out, size, "%llu", (unsigned long long)value);
+  else
+    snprintf(out, size, "-");
+}
+
+/* Appends "label:count," to the type list. On lack of room it stops appending and sets *truncated,
+ * so the caller can make the cut visible. */
+static void console_append_type(char *buf, size_t size, size_t *len, bool *truncated,
+                                const char *label, uint32_t count) {
+  if (*truncated)
+    return;
+  int n = snprintf(buf + *len, size - *len, "%s:%u,", label, count);
+  if (n < 0 || (size_t)n >= size - *len) {
+    *truncated = true;
+    buf[*len] = '\0';
+    return;
+  }
+  *len += (size_t)n;
+}
+
+/* PIPE/CONSOLE and the one-off PIPE/CONSOLE_TS: what the console told us in control messages
+ * (docs/design/streaming.md section 9.4). Copies the receive thread's info under its sequence
+ * lock, prints window figures as deltas against the previous copy and never writes anything the
+ * receive thread owns. Call once per window, only when show_latency is on. */
+static void host_metrics_report_console(ChiakiStreamConnection *stream_connection) {
+  ChiakiConsoleInfo cur;
+  bool copied = false;
+  for (int attempt = 0; attempt < CONSOLE_READ_ATTEMPTS && !copied; attempt++) {
+    uint32_t lock_before = stream_connection->console_info_lock;
+    if (lock_before & 1)
+      continue;
+    __sync_synchronize();
+    cur = stream_connection->console_info;
+    __sync_synchronize();
+    copied = stream_connection->console_info_lock == lock_before;
+  }
+  if (!copied)
+    cur = console_prev;  // no consistent copy: print the last one, window figures are 0
+  const ChiakiConsoleInfo *prev = &console_prev;
+
+  // rtt: latest value, and min/max over the window's values (the newest ones if the ring is full).
+  uint32_t rtt_window_n = console_counter_delta(cur.quality_rtt_msgs, prev->quality_rtt_msgs);
+  uint32_t range_n =
+      rtt_window_n < CHIAKI_CONSOLE_INFO_RTT_RING ? rtt_window_n : CHIAKI_CONSOLE_INFO_RTT_RING;
+  double rtt_min = 0.0;
+  double rtt_max = 0.0;
+  for (uint32_t i = 0; i < range_n; i++) {
+    double v = cur.rtt_ring[(cur.quality_rtt_msgs - 1 - i) % CHIAKI_CONSOLE_INFO_RTT_RING];
+    if (i == 0 || v < rtt_min)
+      rtt_min = v;
+    if (i == 0 || v > rtt_max)
+      rtt_max = v;
+  }
+
+  char rtt_s[CONSOLE_NUM_BUF_SIZE];
+  char rtt_min_s[CONSOLE_NUM_BUF_SIZE];
+  char rtt_max_s[CONSOLE_NUM_BUF_SIZE];
+  char target_s[CONSOLE_NUM_BUF_SIZE], upstream_s[CONSOLE_NUM_BUF_SIZE];
+  char upstream_loss_s[CONSOLE_NUM_BUF_SIZE], loss_s[CONSOLE_NUM_BUF_SIZE];
+  char ts_gap_s[CONSOLE_NUM_BUF_SIZE];
+  console_format_double(rtt_s, sizeof(rtt_s), cur.quality_rtt_msgs > 0, CONSOLE_RTT_DECIMALS,
+                        cur.rtt);
+  console_format_double(rtt_min_s, sizeof(rtt_min_s), range_n > 0, CONSOLE_RTT_DECIMALS, rtt_min);
+  console_format_double(rtt_max_s, sizeof(rtt_max_s), range_n > 0, CONSOLE_RTT_DECIMALS, rtt_max);
+  console_format_u64(target_s, sizeof(target_s),
+                     cur.quality_seen & CHIAKI_CONSOLE_INFO_SEEN_TARGET_BITRATE,
+                     cur.target_bitrate);
+  console_format_u64(upstream_s, sizeof(upstream_s),
+                     cur.quality_seen & CHIAKI_CONSOLE_INFO_SEEN_UPSTREAM_BITRATE,
+                     cur.upstream_bitrate);
+  console_format_double(upstream_loss_s, sizeof(upstream_loss_s),
+                        cur.quality_seen & CHIAKI_CONSOLE_INFO_SEEN_UPSTREAM_LOSS,
+                        CONSOLE_LOSS_DECIMALS, cur.upstream_loss);
+  console_format_u64(loss_s, sizeof(loss_s), cur.quality_seen & CHIAKI_CONSOLE_INFO_SEEN_LOSS,
+                     cur.loss);
+  console_format_u64(ts_gap_s, sizeof(ts_gap_s), cur.ts_msgs >= 2, cur.ts_gap_ms);
+
+  // Session totals per ignored type number, every type seen at least once; "other" = out of range.
+  char types[CONSOLE_TYPES_BUF_SIZE];
+  size_t types_len = 0;
+  bool types_truncated = false;
+  types[0] = '\0';
+  for (uint32_t t = 0; t <= CHIAKI_CONSOLE_INFO_MSG_TYPE_MAX; t++) {
+    if (cur.ignored_by_type[t] == 0)
+      continue;
+    char label[CONSOLE_NUM_BUF_SIZE];
+    snprintf(label, sizeof(label), "%u", t);
+    console_append_type(types, sizeof(types), &types_len, &types_truncated, label,
+                        cur.ignored_by_type[t]);
+  }
+  if (cur.ignored_other > 0)
+    console_append_type(types, sizeof(types), &types_len, &types_truncated, "other",
+                        cur.ignored_other);
+  if (types_truncated) {
+    // Make the cut visible: end the list with "..." (room is guaranteed: the buffer is far larger).
+    snprintf(types + types_len, sizeof(types) - types_len, "...");
+  } else if (types_len > 0) {
+    types[types_len - 1] = '\0';  // drop the trailing comma
+  }
+
+  LOGD(
+      "PIPE/CONSOLE quality_win=%u quality_total=%u rtt_msgs_win=%u rtt_range_n=%u rtt=%s "
+      "rtt_min=%s rtt_max=%s target_bitrate=%s upstream_bitrate=%s upstream_loss=%s loss=%s "
+      "ignored_win=%u ignored_total=%u types=[%s] ts_win=%u ts_total=%u ts_gap_ms=%s",
+      console_counter_delta(cur.quality_msgs, prev->quality_msgs), cur.quality_msgs, rtt_window_n,
+      range_n, rtt_s, rtt_min_s, rtt_max_s, target_s, upstream_s, upstream_loss_s, loss_s,
+      console_counter_delta(cur.ignored_msgs, prev->ignored_msgs), cur.ignored_msgs, types,
+      console_counter_delta(cur.ts_msgs, prev->ts_msgs), cur.ts_msgs, ts_gap_s);
+
+  // First periodic-timestamp message of the session, raw, once.
+  if (!console_ts_printed && cur.first_ts_len > 0) {
+    static const char hex_digits[] = "0123456789abcdef";
+    uint32_t stored = cur.first_ts_len < CHIAKI_CONSOLE_INFO_FIRST_TS_CAP
+                          ? cur.first_ts_len
+                          : CHIAKI_CONSOLE_INFO_FIRST_TS_CAP;
+    char hex[CONSOLE_TS_HEX_BUF_SIZE];
+    for (uint32_t i = 0; i < stored; i++) {
+      hex[i * 2] = hex_digits[cur.first_ts[i] >> 4];
+      hex[i * 2 + 1] = hex_digits[cur.first_ts[i] & 0x0F];
+    }
+    hex[stored * 2] = '\0';
+    if (stored < cur.first_ts_len)
+      LOGD("PIPE/CONSOLE_TS first len=%u hex=%s truncated_to=%u", cur.first_ts_len, hex, stored);
+    else
+      LOGD("PIPE/CONSOLE_TS first len=%u hex=%s", cur.first_ts_len, hex);
+    console_ts_printed = true;
+  }
+
+  console_prev = cur;
+}
+
+/* Writes the lower-case hex of n bytes into out (room for 2n+1 chars). */
+static void sps_hex_encode(char *out, const uint8_t *bytes, uint32_t n) {
+  static const char hex_digits[] = "0123456789abcdef";
+  for (uint32_t i = 0; i < n; i++) {
+    out[i * 2] = hex_digits[bytes[i] >> 4];
+    out[i * 2 + 1] = hex_digits[bytes[i] & 0x0F];
+  }
+  out[n * 2] = '\0';
+}
+
+/* PIPE/SPS: reads the session's first SPS with sps_probe_parse() (bounded, no allocation) and
+ * prints the fields the app does not read elsewhere, or says why it refused (`fail=`) and prints
+ * the bytes so the line can be decoded by hand (docs/design/streaming.md section 9.5). UI thread
+ * only. */
+static void host_metrics_print_sps(const SpsProbeData *d) {
+  uint32_t stored = d->first_len < SPS_PROBE_CAP ? d->first_len : SPS_PROBE_CAP;
+  char hex[SPS_HEX_BUF_SIZE];
+  char cut[SPS_CUT_BUF_SIZE] = "";
+  sps_hex_encode(hex, d->first, stored);
+  if (stored < d->first_len)
+    snprintf(cut, sizeof(cut), " truncated_to=%u", stored);
+
+  SpsFields f;
+  SpsParseStatus status = sps_probe_parse(d->first, stored, d->first_len, &f);
+  if (status != SPS_PARSE_OK) {
+    LOGD("PIPE/SPS fail=%s sps_len=%u hex_cap=%u hex=%s%s", sps_probe_status_name(status),
+         d->first_len, SPS_PROBE_CAP, hex, cut);
+    return;
+  }
+  char restriction_s[SPS_OPT_BUF_SIZE];
+  char reorder_s[SPS_OPT_BUF_SIZE];
+  char dec_buffering_s[SPS_OPT_BUF_SIZE];
+  console_format_u64(restriction_s, sizeof(restriction_s), f.vui,
+                     f.bitstream_restriction ? 1u : 0u);
+  console_format_u64(reorder_s, sizeof(reorder_s), f.bitstream_restriction, f.num_reorder_frames);
+  console_format_u64(dec_buffering_s, sizeof(dec_buffering_s), f.bitstream_restriction,
+                     f.max_dec_frame_buffering);
+  LOGD(
+      "PIPE/SPS sps_len=%u profile_idc=%u constraint_flags=0x%02x level_idc=%u poc_type=%u "
+      "frame_mbs_only=%u max_num_ref_frames=%u vui=%d bitstream_restriction=%s "
+      "num_reorder_frames=%s max_dec_frame_buffering=%s hex_cap=%u hex=%s",
+      d->first_len, (unsigned)f.profile_idc, (unsigned)f.constraint_flags, (unsigned)f.level_idc,
+      f.poc_type, f.frame_mbs_only, f.max_num_ref_frames, f.vui ? 1 : 0, restriction_s, reorder_s,
+      dec_buffering_s, SPS_PROBE_CAP, hex);
+}
+
+/* PIPE/SPS (once per session) and PIPE/SPS_REPEAT (when the counts moved, at most once per
+ * window). Copies the receive thread's record only when it changed. Not behind show_latency: it is
+ * one line per session and has to be in every testing log. UI thread only. */
+static void host_metrics_report_sps(uint64_t now_us) {
+  uint32_t version = sps_probe_version();
+  if (version == sps_seen_version || (version & 1))
+    return;
+  SpsProbeData d;
+  if (!sps_probe_snapshot(&d, SPS_READ_ATTEMPTS))
+    return; /* overlapped a write; look again on the next tick */
+  if (d.first_len == 0) {
+    sps_seen_version = version;
+    return;
+  }
+  if (!sps_line_printed) {
+    host_metrics_print_sps(&d);
+    sps_line_printed = true;
+  }
+  if (d.seen_again != sps_repeat_printed_seen || d.differed != sps_repeat_printed_differed) {
+    if (now_us - sps_repeat_last_us < SPS_REPEAT_MIN_INTERVAL_US)
+      return; /* too soon after the last repeat line; the change is still pending */
+    LOGD("PIPE/SPS_REPEAT seen_again=%u differed=%u", d.seen_again, d.differed);
+    sps_repeat_printed_seen = d.seen_again;
+    sps_repeat_printed_differed = d.differed;
+    sps_repeat_last_us = now_us;
+  }
+  sps_seen_version = version;
 }
 
 void host_metrics_update_latency(void) {
@@ -626,6 +909,31 @@ void host_metrics_update_latency(void) {
       context.stream.display_paced_count = 0;
     }
 
+    // PIPE/PRESS: publish this window's press-to-picture results (see PressWindow in
+    // stream_state.h) and clear the accumulator. Recv-thread totals are running counters, so
+    // the window's figures are deltas against what the previous close saw. Unconditional like
+    // the reducers above; only the LOGD print further down is gated by show_latency.
+    {
+      PressCounters counters_now;
+      vita_video_press_meter_totals(&counters_now);
+      uint32_t press_count = 0;
+      uint64_t press_time_us;
+      if (!chiaki_feedback_sender_read_press_stamp(&stream_connection->feedback_sender,
+                                                   &press_count, &press_time_us))
+        press_count = context.stream.press_seen_presses;  // no consistent read: no news this window
+
+      PressWindow *pub = &context.stream.press_pub;
+      *pub = context.stream.press_acc;
+      pub->presses = press_count >= context.stream.press_seen_presses
+                         ? press_count - context.stream.press_seen_presses
+                         : press_count;
+      press_counters_delta(&counters_now, &context.stream.press_seen, &pub->counters);
+      context.stream.press_seen_presses = press_count;
+      context.stream.press_seen = counters_now;
+      context.stream.press_total_presses = press_count;
+      memset(&context.stream.press_acc, 0, sizeof(context.stream.press_acc));
+    }
+
     // PIPE/INPUT: reduce this window's controller-poll-origin -> feedback-sender-wire
     // latency samples (ring lives in ChiakiFeedbackSender, lib/include/chiaki/feedbacksender.h
     // -- see the field comment there and in stream_state.h for why it's not duplicated
@@ -687,6 +995,8 @@ void host_metrics_update_latency(void) {
       }
     }
   }
+
+  host_metrics_report_sps(now_us);
 
   if (!context.config.show_latency)
     return;
@@ -753,6 +1063,94 @@ void host_metrics_update_latency(void) {
         context.stream.display_swap_p50_us, context.stream.display_swap_p95_us,
         context.stream.display_sample_n, context.stream.display_dropped_n,
         context.stream.display_paced_n);
+    // PIPE/PRESS: press-to-picture meter, one summary line per window, printed even when empty,
+    // followed by one PIPE/PRESS_SAMPLE line per completed sample (up to PRESS_WINDOW_SAMPLE_CAP;
+    // the rest are counted in sample_overflow). The *_us stages are microseconds since the press
+    // was sent; first_us is resolved to 1 ms (it comes from the lib's millisecond stamp). Printed
+    // here, on the UI thread at window close, never from the receive or decode thread. See
+    // section 9.1 of docs/design/streaming.md for the fields and for how to pick trustworthy
+    // samples (waiting=1 and order_ok=1; also inburst=0 for the strictest set).
+    {
+      const PressWindow *pw = &context.stream.press_pub;
+      LOGD(
+          "PIPE/PRESS presses=%u n=%u amb=%u order_err=%u expired=%u full=%u inburst=%u unseen=%u "
+          "unmatched=%u lost=%u sample_overflow=%u presses_total=%u samples_total=%u",
+          pw->presses, pw->samples, pw->ambiguous, pw->order_err, pw->counters.expired,
+          pw->counters.full, pw->counters.inburst, pw->counters.unseen, pw->counters.unmatched,
+          pw->counters.lost, pw->sample_overflow, context.stream.press_total_presses,
+          context.stream.press_total_samples);
+      uint32_t listed = pw->samples - pw->sample_overflow;
+      for (uint32_t i = 0; i < listed; i++) {
+        const PressSample *ps = &pw->list[i];
+        LOGD(
+            "PIPE/PRESS_SAMPLE press=%u first_us=%d assembled_us=%d decoded_us=%d shown_us=%d "
+            "frame_bytes=%u quiet_bytes=%u waiting=%u inburst=%u order_ok=%u",
+            ps->press_count, ps->first_us, ps->assembled_us, ps->decoded_us, ps->shown_us,
+            ps->frame_size, ps->quiet_ref, ps->waiting, ps->in_burst ? 1u : 0u,
+            ps->order_ok ? 1u : 0u);
+      }
+    }
+    // PIPE/DECHOLD: decoder hold (frames fed minus pictures handed back) and the per-picture
+    // lag / hold time from the timestamp read-back. Copied under the decode thread's seqlock;
+    // when no consistent copy is won in a few tries the previous window's values are printed.
+    // lag_avg is x100 fixed point like the occupancy lines. See streaming.md section 9.2.
+    {
+      DecHoldWindow dh;
+      bool dh_ok = false;
+      for (int attempt = 0; attempt < DECHOLD_READ_ATTEMPTS && !dh_ok; attempt++) {
+        uint32_t lock_before = context.stream.dechold_lock;
+        if (lock_before & 1)
+          continue;
+        __sync_synchronize();
+        dh = context.stream.dechold_pub;
+        __sync_synchronize();
+        dh_ok = context.stream.dechold_lock == lock_before;
+      }
+      if (dh_ok)
+        dechold_last = dh;
+      const DecHoldWindow *d = &dechold_last;
+      LOGD(
+          "PIPE/DECHOLD fed=%u handed=%u hold=%u hold_min=%u hold_max=%u lag_min=%u "
+          "lag_avg=%u.%02u lag_max=%u hold_us_avg=%u hold_us_max=%u rb_good=%u rb_bad=%u "
+          "rb_stale=%u",
+          d->fed, d->handed, d->hold, d->hold_min, d->hold_max, d->lag_min,
+          d->lag_avg_x100 / OCC_AVG_FIXED_POINT_SCALE, d->lag_avg_x100 % OCC_AVG_FIXED_POINT_SCALE,
+          d->lag_max, d->hold_us_avg, d->hold_us_max, d->good, d->bad, d->stale);
+    }
+    // PIPE/RECVBUF: packets and bytes drained per receive wake-up and the receive buffer size,
+    // from the Takion receive thread's last closed window (seqlock copy as above). The queue-length
+    // part was left out: see streaming.md section 9.3. drained_avg is x100 fixed point.
+    {
+      ChiakiTakion *takion = &stream_connection->takion;
+      ChiakiTakionRecvbufWindow rb;
+      bool rb_ok = false;
+      for (int attempt = 0; attempt < RECVBUF_READ_ATTEMPTS && !rb_ok; attempt++) {
+        uint32_t lock_before = takion->recvbuf_lock;
+        if (lock_before & 1)
+          continue;
+        __sync_synchronize();
+        rb = takion->recvbuf_pub;
+        __sync_synchronize();
+        rb_ok = takion->recvbuf_lock == lock_before;
+      }
+      if (rb_ok)
+        recvbuf_last = rb;
+      const ChiakiTakionRecvbufWindow *r = &recvbuf_last;
+      LOGD(
+          "PIPE/RECVBUF wakeups=%u drained_avg=%u.%02u drained_max=%u drained_bytes_avg=%u "
+          "drained_bytes_max=%u drain_cap=%u rcvbuf_req=%u rcvbuf_actual=%u packets=%u bytes=%u "
+          "drain_empty=%u drain_capped=%u block_us=%u poll_us=%u poll_max_us=%u work_us=%u "
+          "wall_us=%u busy_pct=%u.%u",
+          r->wakeups, r->drained_avg_x100 / CHIAKI_TAKION_RECVBUF_AVG_SCALE,
+          r->drained_avg_x100 % CHIAKI_TAKION_RECVBUF_AVG_SCALE, r->drained_max,
+          r->drained_bytes_avg, r->drained_bytes_max, r->drain_cap, r->rcvbuf_requested,
+          r->rcvbuf_actual, r->packets, r->bytes, r->drain_empty, r->drain_capped, r->block_us,
+          r->poll_us, r->poll_max_us, r->work_us, r->wall_us,
+          r->busy_permille / RECVBUF_BUSY_PERMILLE_PER_PCT,
+          r->busy_permille % RECVBUF_BUSY_PERMILLE_PER_PCT);
+      recv_probe_report(r);
+    }
+    host_metrics_report_console(stream_connection);
     LOGD(
         "PIPE/FPS gen=%u reconnect_gen=%u incoming=%u target=%u low_windows=%u "
         "post_reconnect_low=%u post_window_remaining_ms=%llu decode_avg_ms=%.1f decode_max_ms=%.1f "

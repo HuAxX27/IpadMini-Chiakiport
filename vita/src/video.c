@@ -19,6 +19,8 @@
 
 #include "video.h"
 #include "video_overlay.h"
+#include "press_meter.h"
+#include "sps_probe.h"
 #include "context.h"
 #include "ui.h"
 
@@ -169,6 +171,45 @@ static volatile uint64_t incoming_frame_first_packet_ms = 0;
  * 0 = no valid timestamp yet (never decoded a frame this session); the reader must check for
  * this explicitly rather than computing a bogus multi-decade span against process-start. */
 static volatile uint64_t incoming_frame_decode_done_us = 0;
+
+/* PIPE/PRESS (#413, docs/design/streaming.md "Delay probes"): press-to-picture meter wiring.
+ * Detection (press_meter.c) runs on the recv thread inside vita_h264_decode_frame(); the
+ * jump frame is then followed to the screen by comparing frame sequence numbers, so it still
+ * completes when the queue dropped the frame, a newer decode replaced it, pacing skipped it
+ * or the freeze path showed an older picture. Log-only: nothing here changes behaviour. */
+
+/* Recv thread only: the detector state and the running frame counter (frame_seq stored in each
+ * DecodeSlot, 0 = no frame yet). */
+static PressMeter press_meter;
+static uint32_t press_frame_seq = 0;
+/* Jumps armed whose hand-off ring was full (the UI thread had not shown the earlier ones). The
+ * jump is dropped, not queued. Recv writes. */
+static volatile uint32_t press_lost_total = 0;
+
+/* Armed jumps, recv thread -> UI thread, no lock and no seqlock: a single-producer /
+ * single-consumer ring. Several jumps can be in flight at once (answers 300 ms apart, a picture
+ * is shown up to about 150 ms after it is assembled). press_jump_head counts jumps armed and is
+ * written only by the recv thread; press_jump_tail counts jumps completed and is written only by
+ * the UI thread. A slot is written by recv only while head - tail < PRESS_JUMP_RING_DEPTH, i.e.
+ * after the UI thread has finished reading it and advanced the tail; the UI thread reads a slot
+ * only after seeing the head move past it. Barriers order the slot contents against the counter
+ * on each side. */
+#define PRESS_JUMP_RING_DEPTH 8
+static PressJump press_jump_ring[PRESS_JUMP_RING_DEPTH];
+static uint32_t press_jump_ring_frame_seq[PRESS_JUMP_RING_DEPTH];
+static volatile uint32_t press_jump_head = 0;
+static volatile uint32_t press_jump_tail = 0;
+
+/* Decode thread -> UI thread: which frame is sitting in frame_texture and when its decode
+ * finished, published as a pair under the same seqlock scheme (press_pub_lock) so the UI
+ * thread never pairs one frame's number with another frame's decode-done time. Written in
+ * decode_frame_now() under `mtx`, next to incoming_frame_decode_done_us. */
+static volatile uint32_t press_pub_lock = 0;
+static volatile uint32_t incoming_frame_seq = 0;
+static volatile uint64_t press_pub_decode_done_us = 0;
+
+/* Attempts of the lock-free reads above before giving up until the next frame / swap. */
+#define PRESS_SEQLOCK_READ_ATTEMPTS 4
 
 /* Consecutive corrupt-frame presentations. Reset on any clean frame.
  * When it reaches FREEZE_MAX_STREAK the freeze is released unconditionally. */
@@ -337,6 +378,150 @@ static void record_decode_timing_sample(uint32_t decode_elapsed_us) {
   context.stream.decode_window_count++;
 }
 
+/* PIPE/DECHOLD (#413, docs/design/streaming.md section 9.2): does the hardware decoder hold
+ * pictures back? Decode thread only (everything below is read and written in
+ * decode_frame_now() under `mtx`, or in vita_h264_start() before the thread exists), except the
+ * published window in context.stream.dechold_pub which the UI thread reads under a seqlock. */
+
+/* Feed-time ring: frame number modulo this -> when that frame was handed to the decoder. Must
+ * stay larger than DECHOLD_LAG_MAX or every plausible read-back would count as too old. */
+#define DECHOLD_FEED_RING 64u
+/* A read-back more than this many frame numbers behind the frame just fed is not believed. */
+#define DECHOLD_LAG_MAX 32u
+/* The "no timestamp" value the decoder is primed with before every decode (and the value both
+ * halves of the access unit's pts carried before #413). */
+#define DECHOLD_PTS_SENTINEL 0xFFFFFFFFu
+
+typedef struct {
+  uint32_t fed;      /* decodes accepted by the decoder (sceAvcdecDecode returned >= 0) */
+  uint32_t handed;   /* pictures handed back (sum of numOfOutput) */
+  uint32_t hold_min; /* fed - handed, extremes over the window (running totals, not deltas) */
+  uint32_t hold_max;
+  uint32_t good;    /* read-backs that passed validation */
+  uint32_t bad;     /* pictures whose read-back failed validation */
+  uint32_t stale;   /* good read-backs whose feed time is no longer in the ring */
+  uint32_t lag_min; /* frame numbers fed minus read back, good read-backs only */
+  uint32_t lag_max;
+  uint64_t lag_sum;
+  uint32_t hold_us_n; /* good, non-stale read-backs */
+  uint64_t hold_us_sum;
+  uint32_t hold_us_max;
+} DecHoldAcc;
+
+static DecHoldAcc dechold_acc;
+static uint32_t dechold_fed_total = 0;
+static uint32_t dechold_handed_total = 0;
+static uint32_t dechold_feed_seq[DECHOLD_FEED_RING];
+static uint64_t dechold_feed_us[DECHOLD_FEED_RING];
+
+/* Frames fed minus pictures handed back, never negative. */
+static uint32_t dechold_current_hold(void) {
+  return dechold_fed_total >= dechold_handed_total ? dechold_fed_total - dechold_handed_total : 0;
+}
+
+/* Starts a fresh window whose hold extremes begin at the current hold. */
+static void dechold_reset_window(void) {
+  memset(&dechold_acc, 0, sizeof(dechold_acc));
+  dechold_acc.hold_min = dechold_current_hold();
+  dechold_acc.hold_max = dechold_acc.hold_min;
+}
+
+/* Clears all PIPE/DECHOLD decode-thread state; called from vita_h264_start(). */
+static void dechold_reset_session(void) {
+  dechold_fed_total = 0;
+  dechold_handed_total = 0;
+  memset(dechold_feed_seq, 0, sizeof(dechold_feed_seq));
+  memset(dechold_feed_us, 0, sizeof(dechold_feed_us));
+  dechold_reset_window();
+}
+
+/* Reduces the window to 32-bit fields, publishes it to the UI thread under the dechold_lock
+ * seqlock (odd while writing; the reader retries unless it saw the same even value before and
+ * after) and starts the next window. Decode thread, about once per second. */
+static void dechold_close_window(void) {
+  const DecHoldAcc *a = &dechold_acc;
+  DecHoldWindow out;
+  out.fed = a->fed;
+  out.handed = a->handed;
+  out.hold = dechold_current_hold();
+  out.hold_min = a->hold_min;
+  out.hold_max = a->hold_max;
+  out.lag_min = a->good > 0 ? a->lag_min : 0;
+  out.lag_max = a->good > 0 ? a->lag_max : 0;
+  out.lag_avg_x100 =
+      a->good > 0 ? (uint32_t)((a->lag_sum * OCC_AVG_FIXED_POINT_SCALE) / a->good) : 0;
+  out.hold_us_avg = a->hold_us_n > 0 ? (uint32_t)(a->hold_us_sum / a->hold_us_n) : 0;
+  out.hold_us_max = a->hold_us_max;
+  out.good = a->good;
+  out.bad = a->bad;
+  out.stale = a->stale;
+
+  context.stream.dechold_lock++;
+  __sync_synchronize();
+  context.stream.dechold_pub = out;
+  __sync_synchronize();
+  context.stream.dechold_lock++;
+
+  dechold_reset_window();
+}
+
+/* Accounts for one decode that sceAvcdecDecode accepted (return value >= 0). frame_seq is the
+ * number that was fed as the access unit's pts, fed_us/done_us the clock reads taken before and
+ * after the call (both already existed), readback_pts the output picture's info.pts. Returns
+ * true and the read-back frame number in *readback_seq when this decode produced a picture whose
+ * pts echoes a number we could have fed; false otherwise (no picture, or a read-back that fails
+ * validation). */
+static bool dechold_record_decode(uint32_t frame_seq, uint64_t fed_us, uint64_t done_us,
+                                  uint32_t num_output, const SceVideodecTimeStamp *readback_pts,
+                                  uint32_t *readback_seq) {
+  DecHoldAcc *a = &dechold_acc;
+
+  uint32_t slot = frame_seq % DECHOLD_FEED_RING;
+  dechold_feed_seq[slot] = frame_seq;
+  dechold_feed_us[slot] = fed_us;
+
+  dechold_fed_total++;
+  dechold_handed_total += num_output;
+  a->fed++;
+  a->handed += num_output;
+  uint32_t hold = dechold_current_hold();
+  if (hold < a->hold_min)
+    a->hold_min = hold;
+  if (hold > a->hold_max)
+    a->hold_max = hold;
+
+  if (num_output == 0)
+    return false;
+
+  uint32_t rb_lower = readback_pts->lower;
+  uint32_t lag = frame_seq - rb_lower;
+  if (readback_pts->upper != 0 || rb_lower == 0 || rb_lower == DECHOLD_PTS_SENTINEL ||
+      lag > DECHOLD_LAG_MAX) {
+    a->bad++;
+    return false;
+  }
+
+  if (a->good == 0 || lag < a->lag_min)
+    a->lag_min = lag;
+  if (lag > a->lag_max)
+    a->lag_max = lag;
+  a->lag_sum += lag;
+  a->good++;
+
+  uint32_t rb_slot = rb_lower % DECHOLD_FEED_RING;
+  if (dechold_feed_seq[rb_slot] != rb_lower) {
+    a->stale++;
+  } else {
+    uint32_t hold_us = (uint32_t)(done_us - dechold_feed_us[rb_slot]);
+    a->hold_us_n++;
+    a->hold_us_sum += hold_us;
+    if (hold_us > a->hold_us_max)
+      a->hold_us_max = hold_us;
+  }
+  *readback_seq = rb_lower;
+  return true;
+}
+
 void update_scaling_settings(int width, int height) {
   // Initialize defaults - full screen
   image_scaling.texture_width = SCREEN_WIDTH;
@@ -402,6 +587,8 @@ typedef struct {
    * carried through the queue so end-to-end latency can be measured at display time in
    * vita_video_render_latest_frame(). 0 if unavailable. */
   uint64_t frame_first_packet_ms;
+  /* PIPE/PRESS: recv-thread frame counter value of this frame (see press_frame_seq). */
+  uint32_t press_frame_seq;
 } DecodeSlot;
 
 /* Use a SEPARATE mutex from the existing decode `mtx` so the recv thread's
@@ -519,6 +706,9 @@ static void record_incoming_frame_sample(void) {
     context.stream.decode_window_total_us = 0;
     context.stream.decode_window_max_us = 0;
     context.stream.decode_window_count = 0;
+
+    // PIPE/DECHOLD: same window, same thread (decode thread, via decode_frame_now()).
+    dechold_close_window();
 
     // Latency investigation (item 2): publish TIME-WEIGHTED decode queue occupancy for
     // this window (see the decode_q_occ_area_us block above for why). Safe to lock
@@ -898,7 +1088,7 @@ cleanup:
  * dedicated decode thread (GH #188). buf must be a stable DECODE_SLOT_CAPACITY
  * allocation (not the borrowed frame_buf pointer from videoreceiver). */
 static int decode_frame_now(uint8_t *buf, size_t buf_size, bool frame_corrupt,
-                            uint64_t frame_first_packet_ms) {
+                            uint64_t frame_first_packet_ms, uint32_t frame_seq) {
   chiaki_mutex_lock(&mtx);
 
   if (buf_size > (size_t)sceAvcdecDecodeAvailableSize(decoder)) {
@@ -921,6 +1111,13 @@ static int decode_frame_now(uint8_t *buf, size_t buf_size, bool frame_corrupt,
    * cross-thread read needs no additional synchronization beyond the volatile
    * qualifier already on that pointer. */
   picture.frame.pPicture[0] = vita2d_texture_get_datap(frame_texture);
+  /* PIPE/DECHOLD: the frame's running number rides through the decoder as the presentation
+   * timestamp, and the output timestamp is primed with the sentinel so a decoder that does not
+   * write it back cannot leave an old (valid-looking) number behind. dts is unchanged. */
+  au.pts.upper = 0;
+  au.pts.lower = frame_seq;
+  picture.info.pts.upper = DECHOLD_PTS_SENTINEL;
+  picture.info.pts.lower = DECHOLD_PTS_SENTINEL;
   uint64_t decode_start_us = sceKernelGetProcessTimeWide();
   ret = sceAvcdecDecode(decoder, &au, &array_picture);
   uint64_t decode_end_us = sceKernelGetProcessTimeWide();
@@ -942,6 +1139,15 @@ static int decode_frame_now(uint8_t *buf, size_t buf_size, bool frame_corrupt,
     chiaki_mutex_unlock(&mtx);
     return 0;
   }
+
+  /* PIPE/DECHOLD: count what went in and what came out, and match the output picture to the
+   * frame number it carries. Must run before the numOfOutput check: a decode that returns no
+   * picture is exactly a held frame. */
+  uint32_t published_seq = frame_seq;
+  uint32_t readback_seq = 0;
+  if (dechold_record_decode(frame_seq, decode_start_us, decode_end_us, array_picture.numOfOutput,
+                            &picture.info.pts, &readback_seq))
+    published_seq = readback_seq;
 
   if (array_picture.numOfOutput != 1) {
     LOGD("numOfOutput %d bufSize 0x%x\n", array_picture.numOfOutput, (unsigned int)buf_size);
@@ -969,7 +1175,16 @@ static int decode_frame_now(uint8_t *buf, size_t buf_size, bool frame_corrupt,
     incoming_frame_corrupt = frame_corrupt;
     incoming_frame_first_packet_ms = frame_first_packet_ms;
     // PIPE/DISPLAY: stamp decode-done for the pickup_us span (see field comment above).
-    incoming_frame_decode_done_us = sceKernelGetProcessTimeWide();
+    // PIPE/PRESS: the frame number and the same decode-done time are published as one
+    // seqlock-guarded pair (see press_pub_lock); the clock is read once, not twice.
+    uint64_t decode_done_us = sceKernelGetProcessTimeWide();
+    incoming_frame_decode_done_us = decode_done_us;
+    press_pub_lock++;
+    __sync_synchronize();
+    incoming_frame_seq = published_seq; /* the picture's own number when the decoder echoes it */
+    press_pub_decode_done_us = decode_done_us;
+    __sync_synchronize();
+    press_pub_lock++;
     // D5: Count frames overwritten before display consumed them
     if (frame_ready_for_display)
       context.stream.frame_overwrite_count++;
@@ -980,6 +1195,45 @@ static int decode_frame_now(uint8_t *buf, size_t buf_size, bool frame_corrupt,
 
   chiaki_mutex_unlock(&mtx);
   return 0;
+}
+
+/* PIPE/PRESS, recv thread, once per accepted frame: feeds the detector and, when this frame is
+ * the jump for a waiting press, arms it for the UI thread. Returns the frame's sequence number.
+ * Takes one clock read (the "assembled" point: the frame has just been handed to us) and no
+ * lock: the press stamp is read lock-free from the feedback sender (seqlock), and the armed jump
+ * goes out through the press_jump_ring hand-off. */
+static uint32_t press_meter_observe_frame(size_t buf_size, bool frame_corrupt,
+                                          uint64_t frame_first_packet_ms) {
+  uint64_t arrive_us = sceKernelGetProcessTimeWide();
+  uint32_t frame_seq = ++press_frame_seq;
+
+  if (context.stream.session_init) {
+    uint32_t press_count;
+    uint64_t press_us;
+    if (chiaki_feedback_sender_read_press_stamp(
+            &context.stream.session.stream_connection.feedback_sender, &press_count, &press_us))
+      press_meter_on_press(&press_meter, press_count, press_us);
+  }
+
+  /* frame_first_packet_ms is the lib's millisecond clock, i.e. this process-time clock cut to
+   * whole milliseconds (see the clock-domain comment in vita_video_render_latest_frame()), so
+   * the first-packet point is only known to 1 ms (it reads up to 999 us early). */
+  PressJump jump;
+  if (press_meter_on_frame(&press_meter, (uint32_t)buf_size, frame_corrupt,
+                           frame_first_packet_ms * 1000ULL, arrive_us, &jump)) {
+    uint32_t head = press_jump_head;
+    uint32_t tail = press_jump_tail;
+    __sync_synchronize(); /* the slot is written only after the tail has been read */
+    if (head - tail >= PRESS_JUMP_RING_DEPTH) {
+      press_lost_total++; /* the UI thread is far behind; this jump gets no sample */
+    } else {
+      press_jump_ring[head % PRESS_JUMP_RING_DEPTH] = jump;
+      press_jump_ring_frame_seq[head % PRESS_JUMP_RING_DEPTH] = frame_seq;
+      __sync_synchronize();
+      press_jump_head = head + 1;
+    }
+  }
+  return frame_seq;
 }
 
 int vita_h264_decode_frame(uint8_t *buf, size_t buf_size, bool frame_corrupt,
@@ -1001,6 +1255,13 @@ int vita_h264_decode_frame(uint8_t *buf, size_t buf_size, bool frame_corrupt,
     decode_queue_drops++;
     return 0;
   }
+
+  /* PIPE/SPS (#413): read-only look at whether this buffer begins with an SPS (a few byte
+   * compares; one bounded copy or compare only when it does). buf is not modified and the
+   * decoder is fed exactly as before. Parsing and printing happen on the UI thread. */
+  sps_probe_observe(buf, buf_size);
+
+  uint32_t frame_seq = press_meter_observe_frame(buf_size, frame_corrupt, frame_first_packet_ms);
 
   chiaki_mutex_lock(&decode_q_mtx);
 
@@ -1036,6 +1297,7 @@ int vita_h264_decode_frame(uint8_t *buf, size_t buf_size, bool frame_corrupt,
   slot->size = buf_size;
   slot->frame_corrupt = frame_corrupt;
   slot->frame_first_packet_ms = frame_first_packet_ms;
+  slot->press_frame_seq = frame_seq;
   decode_q_tail = (decode_q_tail + 1) % DECODE_QUEUE_DEPTH;
   /* Latency investigation (item 2): depth just changed (increased) — record the
    * transition for the time-weighted occupancy average while still holding decode_q_mtx.
@@ -1102,6 +1364,27 @@ static void record_display_stage_sample(uint32_t *samples, uint32_t *sample_coun
   }
 }
 
+/* PIPE/PRESS, UI thread: folds one finished sample into the current window
+ * (context.stream.press_acc; host_metrics.c reduces and clears it, same thread). */
+static void press_window_record(const PressSample *sample) {
+  PressWindow *w = &context.stream.press_acc;
+  if (w->samples - w->sample_overflow < PRESS_WINDOW_SAMPLE_CAP)
+    w->list[w->samples - w->sample_overflow] = *sample;
+  else
+    w->sample_overflow++;
+  w->samples++;
+  if (!sample->order_ok)
+    w->order_err++;
+  if (sample->waiting > 1)
+    w->ambiguous++;
+  context.stream.press_total_samples++;
+}
+
+void vita_video_press_meter_totals(PressCounters *counters) {
+  press_meter_counters(&press_meter, counters);
+  counters->lost = press_lost_total;
+}
+
 bool vita_video_render_latest_frame(void) {
   /* GH #245 code review round 2: mark entry before any early return, cleared before
    * every return below (mirrors the file's existing lock-then-unlock-before-each-return
@@ -1151,6 +1434,26 @@ bool vita_video_render_latest_frame(void) {
         render_entry_us - decode_done_us_snapshot);
   }
 
+  /* PIPE/PRESS: only while a jump is waiting to be shown, take one consistent (frame number,
+   * decode-done time) pair of the frame this pass picked up, at the same point as the
+   * snapshots above. Costs one volatile compare per pass otherwise. */
+  bool press_pending = press_jump_head != press_jump_tail;
+  bool press_pub_ok = false;
+  uint32_t press_pub_frame_seq = 0;
+  uint64_t press_pub_decode_done = 0;
+  if (press_pending) {
+    for (int attempt = 0; attempt < PRESS_SEQLOCK_READ_ATTEMPTS && !press_pub_ok; attempt++) {
+      uint32_t lock_before = press_pub_lock;
+      if (lock_before & 1)
+        continue;
+      __sync_synchronize();
+      press_pub_frame_seq = incoming_frame_seq;
+      press_pub_decode_done = press_pub_decode_done_us;
+      __sync_synchronize();
+      press_pub_ok = press_pub_lock == lock_before;
+    }
+  }
+
   bool drop_frame = should_drop_frame_for_pacing();
   if (drop_frame) {
     // Frame is paced out but still consumed — advance freeze state so the cap
@@ -1196,8 +1499,10 @@ bool vita_video_render_latest_frame(void) {
    * O(1) pointer swap (GH #245) -- see promote_decoded_frame_to_last_good(). */
   bool corrupt = incoming_frame_corrupt;
   vita2d_texture *present_texture = frame_texture;
+  bool showing_decoded_frame = true; /* PIPE/PRESS: false when an older picture is re-shown */
 
   if (corrupt && last_good_texture != NULL && frozen_frame_streak < FREEZE_MAX_STREAK) {
+    showing_decoded_frame = false;
     frozen_frame_streak++;
     context.stream.freeze_engaged_count++;
     if (frozen_frame_streak == 1)
@@ -1316,6 +1621,29 @@ bool vita_video_render_latest_frame(void) {
     }
   }
 
+  /* PIPE/PRESS: "shown" for the armed jumps = the first swap that presents a decoded picture
+   * which is the jump frame or newer (sequence numbers compared with wrap-safe subtraction).
+   * Every armed jump the shown picture has reached completes at this swap, oldest first; a jump
+   * whose frame is still ahead of the picture stays armed. now_us above is the swap clock read;
+   * no extra clock read here. The tail is written only here; the slot is fully read before the
+   * tail moves past it, which is what lets the recv thread reuse it. */
+  if (press_pending && press_pub_ok && showing_decoded_frame) {
+    uint32_t tail = press_jump_tail;
+    uint32_t head = press_jump_head;
+    __sync_synchronize();
+    while (tail != head) {
+      PressJump jump = press_jump_ring[tail % PRESS_JUMP_RING_DEPTH];
+      uint32_t jump_frame_seq = press_jump_ring_frame_seq[tail % PRESS_JUMP_RING_DEPTH];
+      if ((int32_t)(press_pub_frame_seq - jump_frame_seq) < 0)
+        break;
+      PressSample sample;
+      press_meter_complete(&jump, press_pub_decode_done, now_us, &sample);
+      press_window_record(&sample);
+      __sync_synchronize();
+      press_jump_tail = ++tail;
+    }
+  }
+
   ui_render_in_progress = false;
   return true;
 }
@@ -1352,6 +1680,7 @@ static void *decode_thread_func(void *user) {
     size_t frame_size = decode_queue[popped_idx].size;
     bool corrupt = decode_queue[popped_idx].frame_corrupt;
     uint64_t frame_first_packet_ms = decode_queue[popped_idx].frame_first_packet_ms;
+    uint32_t frame_seq = decode_queue[popped_idx].press_frame_seq;
     /* Latency investigation (item 2): depth does NOT change here — head is deliberately
      * held back until decode completes (see comment above) — so there is nothing to
      * record at this point. The depth transition this slot's occupancy contributed
@@ -1363,7 +1692,7 @@ static void *decode_thread_func(void *user) {
     /* Decode the frame. The slot buffer is exclusively ours until we advance
      * decode_q_head below — the producer will block or drop-oldest on the
      * preceding slots rather than overwriting this one. */
-    decode_frame_now(frame_data, frame_size, corrupt, frame_first_packet_ms);
+    decode_frame_now(frame_data, frame_size, corrupt, frame_first_packet_ms, frame_seq);
 
     /* Release the slot now that decode is done. Signal any blocked producer. */
     chiaki_mutex_lock(&decode_q_mtx);
@@ -1391,6 +1720,16 @@ void vita_h264_start() {
   incoming_frame_corrupt = false;
   incoming_frame_first_packet_ms = 0;
   incoming_frame_decode_done_us = 0;
+  press_meter_reset(&press_meter);
+  sps_probe_reset();
+  press_frame_seq = 0;
+  press_lost_total = 0;
+  press_jump_head = 0;
+  press_jump_tail = 0;
+  press_pub_lock = 0;
+  incoming_frame_seq = 0;
+  press_pub_decode_done_us = 0;
+  dechold_reset_session();
   frozen_frame_streak = 0;
   /* GH #245 code review round 2: no render call is in flight at session start --
    * matches the same "reset to the idle value" treatment as frame_ready_for_display
@@ -1432,6 +1771,7 @@ void vita_h264_start() {
     decode_queue[i].size = 0;
     decode_queue[i].frame_corrupt = false;
     decode_queue[i].frame_first_packet_ms = 0;
+    decode_queue[i].press_frame_seq = 0;
     if (decode_queue[i].data == NULL) {
       LOGE("VIDEO: failed to allocate decode slot %d — decode thread disabled", i);
       for (int j = 0; j < i; j++) {

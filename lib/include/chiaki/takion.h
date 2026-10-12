@@ -12,6 +12,7 @@
 #include "reorderqueue.h"
 #include "feedback.h"
 #include "takionsendbuffer.h"
+#include "takionprobe.h"
 
 #include <stdbool.h>
 
@@ -115,6 +116,53 @@ typedef struct chiaki_takion_connect_info_t
 	uint8_t protocol_version;
 	bool close_socket; // close socket when finishing takion
 } ChiakiTakionConnectInfo;
+
+/** Fixed-point scale of ChiakiTakionRecvbufWindow.drained_avg_x100 (two decimals). */
+#define CHIAKI_TAKION_RECVBUF_AVG_SCALE 100
+
+/**
+ * One PIPE/RECVBUF window (#413, docs/design/streaming.md section 9.3): the receive thread's
+ * last closed window, reduced to 32-bit fields so the UI thread can copy it under
+ * ChiakiTakion.recvbuf_lock.
+ */
+typedef struct chiaki_takion_recvbuf_window_t
+{
+	uint32_t wakeups;           // blocking receives that returned a packet
+	uint32_t drained_avg_x100;  // average packets drained per wake-up, x CHIAKI_TAKION_RECVBUF_AVG_SCALE
+	uint32_t drained_max;       // most packets drained in one wake-up
+	uint32_t drained_bytes_avg; // average bytes drained per wake-up (same packets as drained_avg)
+	uint32_t drained_bytes_max; // most bytes drained in one wake-up
+	uint32_t drain_cap;         // TAKION_RECV_DRAIN_MAX; drained_max equal to it means the cap was hit
+	uint32_t rcvbuf_requested;  // SO_RCVBUF asked for (bytes)
+	uint32_t rcvbuf_actual;     // SO_RCVBUF the kernel reports (bytes), 0 if unknown
+	// Time and traffic of the window, added after the fields above (section 9.3). Durations are
+	// microseconds, saturated at UINT32_MAX.
+	uint32_t packets;           // all packets received: waking ones and drained ones
+	uint32_t bytes;             // their total size
+	uint32_t drain_empty;       // drain loops that ended because a zero-timeout call found no packet
+	uint32_t drain_capped;      // drain loops that ended at drain_cap
+	uint32_t block_us;          // time inside the blocking receive (waiting for the waking packet)
+	uint32_t poll_us;           // time inside the zero-timeout receives of the drain loop, total
+	uint32_t poll_max_us;       // longest single zero-timeout receive
+	uint32_t work_us;           // wall_us minus block_us and poll_us (0 if that would be negative)
+	uint32_t wall_us;           // length of the window
+	uint32_t busy_permille;     // work_us / wall_us in tenths of a percent
+	// PIPE/RECVTIME, PIPE/SOCKQ, PIPE/RECVTHREAD (sections 9.6 to 9.8), added after the fields above.
+	ChiakiTakionTimeWindow video, audio, ctrl;  // time in takion_handle_packet, by packet class
+	ChiakiTakionTimeWindow vsubmit, acb, aout;  // subsets: video submit callback, audio callback, audio output call
+	ChiakiTakionTimeWindow log;                 // log calls made by the receive thread (a subset of the classes)
+	uint32_t ashort, askip, acatchup;           // audio callback decisions
+	ChiakiTakionAudioStats audio_stats;         // PIPE/AUDIO (section 9.9)
+	int64_t unacct_us;                          // work_us minus video, audio and ctrl only; may be negative
+	uint32_t vlog_us, alog_us, clog_us;         // log.us split by the class being handled
+	uint32_t log_block;                         // emitted non-DEBUG log calls (blocking mutex path)
+	uint32_t sockq_n, sockq_min, sockq_avg, sockq_max; // raw recv_queue_length samples
+	uint32_t sockq_wake_avg, sockq_wake_max;    // only the samples taken right after a blocking receive
+	uint32_t sockq_err;                         // failed queries
+	ChiakiTakionTimeWindow sockq_query;         // time spent querying (n counts attempts)
+	ChiakiTakionRecvSession session;            // once-per-session facts (valid = 1 once set)
+	ChiakiTakionRecvThread thread;              // sampled at the window close
+} ChiakiTakionRecvbufWindow;
 
 
 typedef struct chiaki_takion_t
@@ -284,6 +332,39 @@ typedef struct chiaki_takion_t
 		ChiakiSeqNum16 last_frame_index;  // frame_index of the last frame boundary seen
 		bool has_last_frame_index;        // false until the first video packet is observed
 	} video_jitter_stats;
+
+	// PIPE/RECVBUF (#413, docs/design/streaming.md section 9.3). SO_RCVBUF as the kernel reports
+	// it after the set at connect (0 when it could not be read back); written before the receive
+	// thread starts, read-only afterwards.
+	uint32_t rcvbuf_actual;
+	// Receive-thread-private window accumulators (never touched by another thread).
+	struct
+	{
+		uint64_t window_start_ms;  // 0 until the first wake-up of the window
+		uint64_t drained_sum;      // packets drained after the waking one, summed over wake-ups
+		uint64_t drained_bytes_sum; // bytes of those packets, summed over wake-ups
+		uint32_t wakeups;          // blocking receives that returned a packet
+		uint32_t drained_max;      // largest drain count of a single wake-up
+		uint32_t drained_bytes_max; // most bytes drained in a single wake-up
+		uint64_t window_start_us;  // start of the window on the microsecond clock
+		uint64_t packets;          // all packets received in the window
+		uint64_t bytes;            // their total size
+		uint64_t block_us;         // time inside the blocking receive
+		uint64_t poll_us;          // time inside the zero-timeout receives
+		uint64_t poll_max_us;      // longest single zero-timeout receive
+		uint32_t drain_empty;      // drain loops ended by an empty zero-timeout call
+		uint32_t drain_capped;     // drain loops ended at the cap
+	} recvbuf_acc;
+	// Last closed window, published by the receive thread for the UI thread. recvbuf_lock is a
+	// seqlock: odd while the receive thread is writing.
+	volatile uint32_t recvbuf_lock;
+	ChiakiTakionRecvbufWindow recvbuf_pub;
+	// PIPE/RECVTIME and friends: accumulators of the same window (see takionprobe.h for who writes
+	// what), the receive thread's own id (0 until it has started; compared by the Vita log paths to
+	// decide "am I the receive thread"), and the facts established before its loop.
+	ChiakiTakionRecvTimeAcc recvtime_acc;
+	volatile int32_t recvtime_thread_id;
+	ChiakiTakionRecvSession recvsession;
 } ChiakiTakion;
 
 

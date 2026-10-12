@@ -6,6 +6,7 @@
 
 #include "controller.h"
 #include "debug_tools.h"
+#include "press_meter.h"
 
 /* Maximum length of a resolved PSN holepunch address string.
  * INET6_ADDRSTRLEN is 46 bytes; 64 gives comfortable headroom. */
@@ -21,6 +22,44 @@
  * the newest) and vita/src/host_metrics.c (reader/reducer, at its existing 1s window). No
  * heap allocation, no per-frame growth either way. */
 #define LATENCY_WINDOW_SAMPLE_CAP 128
+
+/* Most PIPE/PRESS_SAMPLE lines one window can carry. At one to two presses a second a window
+ * holds 0-3 samples; 8 leaves headroom. Samples beyond it are still counted (PressWindow.samples)
+ * and the overflow is shown in the PIPE/PRESS line. */
+#define PRESS_WINDOW_SAMPLE_CAP 8
+
+/* PIPE/PRESS (#413): one ~1 s window of press-to-picture results (docs/design/streaming.md,
+ * section 9.1). Used twice in stream_state: press_acc is filled by
+ * vita_video_render_latest_frame() (UI thread) and press_pub is what host_metrics.c published
+ * from it at the last window close. Both are UI-thread only, so no locking. */
+typedef struct {
+  uint32_t presses;         /* presses sent this window (published copy only) */
+  uint32_t samples;         /* completed samples this window (all of them, listed or not) */
+  uint32_t order_err;       /* samples whose stages were out of order */
+  uint32_t ambiguous;       /* samples with more than one candidate press (waiting > 1) */
+  uint32_t sample_overflow; /* samples completed beyond PRESS_WINDOW_SAMPLE_CAP, not listed */
+  PressCounters counters;   /* this window's deltas of the meter counters (published copy only) */
+  PressSample list[PRESS_WINDOW_SAMPLE_CAP]; /* the first samples of the window, in order */
+} PressWindow;
+
+/* PIPE/DECHOLD (#413): one decoder-hold window (docs/design/streaming.md section 9.2). The
+ * decode thread fills it from private accumulators and publishes it at its ~1 s window close;
+ * the UI thread copies it under context.stream.dechold_lock. 32-bit fields only. */
+typedef struct {
+  uint32_t fed;      /* decodes accepted by the decoder this window */
+  uint32_t handed;   /* pictures handed back this window */
+  uint32_t hold;     /* fed minus handed back, session running totals, at window close */
+  uint32_t hold_min; /* same quantity, extremes over the window */
+  uint32_t hold_max;
+  uint32_t lag_min;      /* frame numbers fed minus read back, good read-backs only (else 0) */
+  uint32_t lag_avg_x100; /* fixed-point x OCC_AVG_FIXED_POINT_SCALE */
+  uint32_t lag_max;
+  uint32_t hold_us_avg; /* fed-to-handed-back microseconds (good, non-stale read-backs) */
+  uint32_t hold_us_max;
+  uint32_t good;  /* read-backs that passed validation */
+  uint32_t bad;   /* pictures whose read-back failed validation */
+  uint32_t stale; /* good read-backs whose feed time was no longer remembered */
+} DecHoldWindow;
 
 /* Code review fix: a 4-slot decode queue's entire interesting range is 0.00-4.00 frames,
  * and the leading hypothesis under test is a SUB-FRAME persistent depth shift (e.g.
@@ -363,6 +402,21 @@ typedef struct vita_chiaki_stream_t {
   uint32_t display_sample_n;
   uint32_t display_dropped_n;
   uint32_t display_paced_n;
+
+  // PIPE/PRESS (#413): see PressWindow above. The press_seen_* values are the running totals
+  // the previous window close saw (recv-thread counters are never reset mid-session, so the
+  // reducer prints deltas); press_total_* are the session running totals.
+  PressWindow press_acc;
+  PressWindow press_pub;
+  uint32_t press_seen_presses;
+  PressCounters press_seen;
+  uint32_t press_total_presses;
+  uint32_t press_total_samples;
+
+  // PIPE/DECHOLD (#413): written by the decode thread at its window close (vita/src/video.c),
+  // read by the UI thread (host_metrics.c). dechold_lock is a seqlock: odd while writing.
+  volatile uint32_t dechold_lock;
+  DecHoldWindow dechold_pub;
 
   // Decode queue occupancy (vita/src/video.c). Time-weighted (area-under-the-depth-curve
   // divided by window duration), not a naive average of push/pop samples: see the
