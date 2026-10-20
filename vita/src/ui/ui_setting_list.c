@@ -129,18 +129,26 @@ static int measure_value(const char *text, void *ctx) {
   return ui_text_face_width(*(const UiFace *)ctx, text);
 }
 
-/** The face an item's value is drawn in: a choice is T20, an info row T20 or T16 as it asks. */
+/** The face an item's value is drawn in: a choice is T20, an info row or an action T20 or T16 as it
+ * asks. */
 static UiFace value_face(const UiSettingItem *item) {
-  return item->kind == UI_SETTING_INFO && item->small_value ? UI_FACE_T16 : UI_FACE_T20;
+  return item->kind != UI_SETTING_CHOICE && item->small_value ? UI_FACE_T16 : UI_FACE_T20;
 }
 
-/** The room an item's value has: a choice's fixed box, or what an info row's label (and an error
- * row's icon) leaves. */
+/** The room an item's value has: a choice's fixed box, or what the row's label, its icon or check
+ * and an action's chevron leave. */
 static int value_max_width(const UiSettingList *list, int index) {
-  if (list->items[index].kind == UI_SETTING_CHOICE)
+  const UiSettingItem *item = &list->items[index];
+  if (item->kind == UI_SETTING_CHOICE)
     return UI_CHOICE_VALUE_W;
-  const int icon_w = list->items[index].error ? UI_SETTING_ERR_ICON + UI_SETTING_ERR_ICON_GAP : 0;
-  return UI_PAGE_PANE_W - 2 * UI_ROW_PAD - list->label_w[index] - UI_INFO_VALUE_GAP - icon_w;
+  int room = UI_PAGE_PANE_W - 2 * UI_ROW_PAD - list->label_w[index] - UI_INFO_VALUE_GAP;
+  if (item->error || item->warn)
+    room -= UI_SETTING_ERR_ICON + UI_SETTING_ERR_ICON_GAP;
+  if (item->checked)
+    room -= UI_SETTING_CHECK_ICON + UI_SETTING_CHECK_GAP;
+  if (item->kind == UI_SETTING_ACTION)
+    room -= UI_CHOICE_ARROW_ART + UI_SETTING_ACTION_VALUE_GAP;
+  return room;
 }
 
 /** Measure the label of row @index: its words, and, with a glyph, the glyph and the tail. */
@@ -176,7 +184,7 @@ static void refresh_caches(UiSettingList *list, bool animate) {
       }
       continue;
     }
-    if (item->kind == UI_SETTING_ACTION)
+    if (item->kind == UI_SETTING_ACTION && !item->value_text)
       continue;
     const char *text = item->value_text ? item->value_text : "";
     if (strncmp(list->value_raw[i], text, UI_SETTING_VALUE_MAX - 1) == 0)
@@ -279,15 +287,27 @@ static void draw_choice(const UiSettingList *list, int index, UiRect left, UiRec
                                list->value_fit[index]);
 }
 
+/** Draw the in-use check of @item in UI_OK, UI_SETTING_CHECK_GAP before a value that starts at
+ * @value_x. */
+static void draw_check(const UiSettingItem *item, int value_x, UiRect row) {
+  if (!item->checked)
+    return;
+  ui_toast_draw_icon(UI_TOAST_OK, value_x - UI_SETTING_CHECK_GAP - UI_SETTING_CHECK_ICON,
+                     row.y + (row.h - UI_SETTING_CHECK_ICON) / 2, UI_SETTING_CHECK_ICON, UI_OK);
+}
+
 /** Draw the value of info row @index right-aligned at the row padding; an error row adds its
- * warning icon before the value and its rule at the row's left edge. */
+ * warning icon before the value and its rule at the row's left edge, a warn row only the icon. */
 static void draw_info(const UiSettingList *list, int index, UiRect row, uint32_t text_color) {
   const UiSettingItem *item = &list->items[index];
   const uint32_t color = item->color ? item->color : text_color;
   const int x = row.x + row.w - UI_ROW_PAD - list->value_w[index];
-  if (item->error) {
+  draw_check(item, x, row);
+  if (item->error || item->warn) {
     ui_toast_draw_icon(UI_TOAST_ERR, x - UI_SETTING_ERR_ICON_GAP - UI_SETTING_ERR_ICON,
                        row.y + (row.h - UI_SETTING_ERR_ICON) / 2, UI_SETTING_ERR_ICON, color);
+  }
+  if (item->error) {
     vita2d_draw_rectangle((float)row.x, (float)row.y, (float)UI_SETTING_ERR_RULE_W, (float)row.h,
                           color);
   }
@@ -316,6 +336,21 @@ static void draw_action(UiRect row, uint32_t color) {
                            (float)(row.y + (row.h - UI_CHOICE_ARROW_ART) / 2), color);
 }
 
+/** Draw the value of action row @index, with its check, ending UI_SETTING_ACTION_VALUE_GAP before
+ * the chevron's place (the chevron's room is kept when the row is disabled and has none). */
+static void draw_action_value(const UiSettingList *list, int index, UiRect row,
+                              uint32_t text_color) {
+  const UiSettingItem *item = &list->items[index];
+  if (!item->value_text)
+    return;
+  const int x = row.x + row.w - UI_ROW_PAD - UI_CHOICE_ARROW_ART - UI_SETTING_ACTION_VALUE_GAP -
+                list->value_w[index];
+  draw_check(item, x, row);
+  ui_text_draw_face_centered_v(value_face(item), x, row.y, row.h,
+                               item->value_color ? item->value_color : text_color,
+                               list->value_fit[index]);
+}
+
 /** True for UI_ROW_PRESS_MS after a row acted. */
 static bool row_pressed(const UiSettingList *list) {
   return list->press_start_us != 0 &&
@@ -334,8 +369,9 @@ void ui_setting_list_draw(const UiSettingList *list) {
     const bool focused = list->active && i == list->focus;
     const bool disabled = item->kind == UI_SETTING_ACTION && item->disabled;
     uint32_t text_color = focused ? UI_TEXT : UI_TEXT_2;
+    /* An action's colour is its label's; a warn row's colour tints label and value alike. */
     uint32_t label_color =
-        item->kind == UI_SETTING_ACTION && item->color ? item->color : text_color;
+        (item->kind == UI_SETTING_ACTION || item->warn) && item->color ? item->color : text_color;
     if (disabled) {
       text_color = ui_color_scale_alpha(text_color, (float)UI_ROW_DISABLED_PCT / 100.0f);
       label_color = ui_color_scale_alpha(label_color, (float)UI_ROW_DISABLED_PCT / 100.0f);
@@ -370,6 +406,7 @@ void ui_setting_list_draw(const UiSettingList *list) {
         draw_info(list, i, row, text_color);
         break;
       case UI_SETTING_ACTION:
+        draw_action_value(list, i, row, text_color);
         if (!disabled)
           draw_action(row, label_color);
         break;
