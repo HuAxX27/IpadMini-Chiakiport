@@ -1,0 +1,42 @@
+# Classic ESP32 (ESP32-WROOM-32 dev boards). The S3, C3 and C6 have no Bluetooth Classic.
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_XTAL_FREQ_AUTO=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# Wi-Fi plus Bluetooth does not fit the default 1 MB app partition.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# 1 ms ticks, so the sender can wait 4 ms between packets.
+CONFIG_FREERTOS_HZ=1000
+# For the console's "tasks" command.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+
+# Bluetooth as Bluepad32 wants it: controller only, BTstack is the host.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=y
+CONFIG_BTDM_CTRL_MODE_BTDM=y
+# At least one more than CONFIG_BLUEPAD32_MAX_DEVICES.
+CONFIG_BTDM_CTRL_BR_EDR_MAX_ACL_CONN=5
+CONFIG_BTDM_CTRL_BLE_MAX_CONN=1
+CONFIG_BTDM_CTRL_BR_EDR_MAX_SYNC_CONN=0
+CONFIG_BTDM_CTRL_AUTO_LATENCY=y
+CONFIG_BTDM_CTRL_MODEM_SLEEP=n
+
+# Wi-Fi and Bluetooth share the radio.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# Bluepad32
+CONFIG_BLUEPAD32_PLATFORM_CUSTOM=y
+CONFIG_BLUEPAD32_MAX_DEVICES=4
+# The DualSense touchpad click comes through the virtual mouse.
+CONFIG_BLUEPAD32_ENABLE_VIRTUAL_DEVICE_BY_DEFAULT=y
+# The DualSense is Bluetooth Classic; BLE scanning would only take radio time from the Wi-Fi.
+CONFIG_BLUEPAD32_ENABLE_BLE_BY_DEFAULT=n
+CONFIG_BTSTACK_AUDIO=n
+
+# Wi-Fi plus Bluetooth Classic overflow the IRAM. These only trade Wi-Fi
+# throughput, and the bridge sends a 20-byte packet at a time.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_IRAM_OPTIMIZATION=n
