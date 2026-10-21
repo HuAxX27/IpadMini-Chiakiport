@@ -42,10 +42,12 @@ Paquete UDP del puente, puerto 9400, 20 bytes en little-endian:
 | 0 | `magic` | 2 × uint8 | `'C'`, `'K'` |
 | 2 | `version` | uint8 | 1 |
 | 3 | `flags` | uint8 | bit 0: touchpad presionado |
-| 4 | `seq` | uint16 | se descartan paquetes que no sean más nuevos |
+| 4 | `seq` | uint16 | se descartan paquetes que no sean más nuevos, salvo tras 500 ms sin paquetes |
 | 6 | `buttons` | uint32 | mismos bits que `ChiakiControllerButton` |
 | 10 | `l2`, `r2` | 2 × uint8 | gatillos |
 | 12 | `lx`, `ly`, `rx`, `ry` | 4 × int16 | sticks, mismo rango que `ChiakiControllerState` |
+
+Mientras hay un control conectado, el puente repite el estado al menos cada 20 ms aunque no cambie, así que el receptor puede dar el control por desconectado tras unos 100 ms de silencio. Pasados 500 ms sin paquetes, el receptor acepta el siguiente con cualquier `seq`: así vuelve a oír a un puente que se reinició y empezó de nuevo en 0.
 
 ## C5 Ajustes, métricas y registro guardado
 
