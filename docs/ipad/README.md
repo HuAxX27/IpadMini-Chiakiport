@@ -1,0 +1,38 @@
+# Port al iPad mini 1: plan de trabajo
+
+Objetivo: jugar PS5 por Remote Play en un iPad mini de primera generación (iOS 9.3.5, armv7) con un DualSense original, a 540p y 30 fps en H.264 como meta mínima.
+
+## Decisiones técnicas
+
+- **Core:** el de VitaRPS5 (`lib/`), ya probado en ARM de 32 bits con 512 MB de RAM. Holepunch apagado al inicio: solo red local.
+- **Cifrado:** mbedTLS, que el core soporta (`CHIAKI_LIB_ENABLE_MBEDTLS`).
+- **Toolchain:** Theos con `iPhoneOS9.3.sdk` en Linux. Xcode 14 y posteriores ya no compilan armv7.
+- **Video:** H.264 con VideoToolbox. Sin HEVC ni HDR, que el A5 no decodifica.
+- **Control:** iOS 9 no expone el DualSense a las apps. El camino principal es un ESP32 clásico con Bluepad32 que manda el estado por UDP (`bridge/`). Se prueba antes si el DualSense conectado directo a la PS5 basta.
+
+## Agentes
+
+| Agente | Responsabilidad | Carpeta |
+|---|---|---|
+| A0 Coordinador | Contratos, integración, upstream, guías, versión final | `docs/ipad/`, `ios/Bridge/CKSettings.h` |
+| A1 Toolchain y CI | Theos, SDK 9.3, dependencias para armv7, CI | `ios/toolchain/`, `.github/workflows/ios-*` |
+| A2 Core | Parches de iOS 9 en `lib/`, CLI `ckctl`, `CKSession` | `lib/`, `ios/Bridge/`, `ios/cli/` |
+| A3 Video | De Annex B a VideoToolbox y a la pantalla | `ios/Video/` |
+| A4 Audio | De Opus a la bocina, sincronía | `ios/Audio/` |
+| A5 Control | Puente ESP32, receptor UDP, controles táctiles | `ios/Input/`, `bridge/` |
+| A6 Interfaz | Pantallas UIKit, registro, ajustes | `ios/UI/` |
+| A7 Rendimiento y QA | Plan de pruebas, métricas, afinación | `docs/ipad/qa/`, `ios/tests/` |
+
+## Oleadas y puntos de control
+
+Cada oleada empieza solo cuando Axel aprueba el punto de control anterior en el iPad.
+
+| Oleada | Actividades | Punto de control al cerrar |
+|---|---|---|
+| 0 Preparación | A0.1–A0.3, A5.1 | P0: camino del DualSense elegido |
+| 1 Cimientos | A0.5, A1.1–A1.6, A2.1–A2.3, A3.1, A5.2, A7.1 | P1: el hola mundo abre en el iPad |
+| 2 Hito espolón | A2.4–A2.5, A4.2, A5.3, A5.5, A6.1, A6.4 | P2: la PS5 despierta desde el iPad (seguir o parar) |
+| 3 Integración | A2.6–A2.8, A3.2–A3.5, A4.1, A4.3–A4.4, A5.4, A6.2–A6.3, A6.5, A7.2 | P3: primer cuadro; P4: sesión jugable de 10 minutos |
+| 4 Afinación | A0.6, A5.6–A5.7, A6.6, A7.3–A7.6 | P5: versión 1.0, 30 minutos estables |
+
+Cada actividad tiene un issue en GitHub con su dependencia, su criterio de terminado y su tamaño.
