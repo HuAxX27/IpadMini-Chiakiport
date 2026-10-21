@@ -4,7 +4,7 @@ Este repo parte de [mauricio-gg/vitaki-vitarps5](https://github.com/mauricio-gg/
 
 - **Commit base:** `ceeb0578fca5566c8cfaa36d0730807ce37beee0` (2026-10-21), "fix(ui): vblank wait on except while the stream is shown, plus UI/SWAPS tear probe (#442) (#443)".
 - **Linaje:** Chiaki → Vitaki de AAGaming → vitaki-fork de ywnico → VitaRPS5 → este repo. Los créditos y la licencia AGPLv3 de todos ellos se conservan (`COPYING`, `LICENSES/`, encabezados SPDX).
-- **Rama `ywnico`:** es el punto donde GitHub creó el fork (vitaki-fork de ywnico, `f2c8922`). Se conserva como referencia; el desarrollo va en `main`.
+- **Única fuente de upstream:** VitaRPS5. No se trae nada directamente de vitaki-fork.
 
 ## Traer arreglos de upstream
 
