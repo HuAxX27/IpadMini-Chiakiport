@@ -1,126 +1,91 @@
-<div align="center">
-  <img src="vita/res/icon0.png" alt="VitaRPS5" width="150"/>
+# IpadMini-Chiakiport
 
-  # VitaRPS5
+**PS Remote Play en el iPad mini de primera generación, para jugar PS5 con un DualSense original.**
 
-  **PS5 and PS4 Remote Play on PS Vita**
+[![Licencia: AGPL v3](https://img.shields.io/badge/Licencia-AGPL%20v3-blue.svg)](LICENSES/AGPL-3.0-only-OpenSSL.txt)
 
-  [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSES/AGPL-3.0-only-OpenSSL.txt)
-  [![Build Status](https://img.shields.io/github/actions/workflow/status/mauricio-gg/vitaki-vitarps5/create_release.yml?branch=main)](https://github.com/mauricio-gg/vitaki-vitarps5/actions)
-  [![Latest Release](https://img.shields.io/github/v/release/mauricio-gg/vitaki-vitarps5)](https://github.com/mauricio-gg/vitaki-vitarps5/releases/latest)
-  [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/solidem)
-</div>
+IpadMini-Chiakiport es un cliente de PS Remote Play para el iPad mini 1 con iOS 9.3.5 y jailbreak. Recibe el video y el audio de una PS5 en la red de casa y le manda lo que se hace con el control. El protocolo lo pone el core de [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki).
 
----
+> **Estado:** en desarrollo, todavía no hay nada que instalar. La oleada 0 del plan está en curso: ya están la estructura del repo y los contratos entre módulos. Lo primero que se va a poder instalar en el iPad es una app de prueba que solo abre (punto de control P1).
 
-VitaRPS5 is a Remote Play client for the PS Vita and PS TV. It streams games from your PS5 or PS4 to the Vita, on your home network or, for a PS5, over the internet.
+## Objetivo
 
-> Disclosure: VitaRPS5 was built largely with the help of AI. It was built on top of already established work, which was improved upon. It would not have been possible for me to build this without it. The design of the app was largely done by myself though, and was implemented by AI agents that could carry out the vision I had. I believe that AI can be used responsibly if proper workflows and software engineering principles are followed, and encourage people to use it as well, responsibly.
+- PS5 en la red local. Jugar por internet queda fuera al principio.
+- Video H.264 a 540p y 30 fps, decodificado por hardware.
+- Audio Opus.
+- Un DualSense original como control, con controles táctiles en pantalla como respaldo.
+- Una app UIKit que se instala como paquete `.deb`.
 
-## Screenshots
+## Hardware objetivo
 
-<div align="center">
-  <img src="docs/screenshots/home_consoles.png" alt="Home menu with the Consoles category" width="100%"/>
-  <br/>
-  <img src="docs/screenshots/home_controller.png" alt="Home menu with the Controller category" width="45%"/>
-  <img src="docs/screenshots/controller_front.png" alt="Controller mapping: front touch zones" width="45%"/>
-  <img src="docs/screenshots/controller_rear.png" alt="Controller mapping: rear touch zones" width="45%"/>
-  <img src="docs/screenshots/profile_psn.png" alt="Profile: PlayStation Network sign-in" width="45%"/>
-  <img src="docs/screenshots/settings_video.png" alt="Settings: video" width="45%"/>
-</div>
+| | |
+|---|---|
+| Equipo | iPad mini de primera generación |
+| Chip | Apple A5: 2 núcleos Cortex-A9 a 1 GHz, armv7 de 32 bits |
+| Memoria | 512 MB |
+| Pantalla | 1024×768 (el video en 16:9 ocupa 1024×576) |
+| Sistema | iOS 9.3.5 con jailbreak, por ejemplo Phœnix |
+| Video | H.264 por hardware; HEVC no |
 
-## Features
+## Cómo va a funcionar
 
-- Console cards with auto-discovery, wake-up and automatic stream start
-- Low-latency streaming with latency presets, 30/60 FPS and fill/letterbox video
-- Automatic recovery from packet loss and dropped connections
-- Full controller support, including L2/R2/L3/R3, touch and motion, with 3 custom mapping presets
-- Internet play through your PSN account (PS5 only)
+- **Core:** el protocolo de Remote Play de Chiaki, en C (`lib/`), con parches pequeños para iOS 9. Por ejemplo, `clock_gettime` no existe antes de iOS 10.
+- **Video:** VideoToolbox decodifica el H.264 que manda la PS5.
+- **Audio:** Opus decodificado y reproducido con AudioQueue o RemoteIO.
+- **Control:** iOS 9 no deja leer un DualSense directamente. El camino principal es un puente: un ESP32 clásico o una Raspberry Pi Pico W con [Bluepad32](https://github.com/ricardoquesada/bluepad32) recibe el DualSense por Bluetooth y manda su estado al iPad por UDP. El camino se decide en la prueba P0 del plan.
+- **App:** UIKit para iOS 9, compilada en Linux con Theos y el SDK de iOS 9.3, firmada con ldid y empaquetada como `.deb`.
 
-## Requirements
+## Qué vas a necesitar
 
-- A PS Vita or PS TV that can install homebrew `.vpk` files
-- A PS5 or PS4 with Remote Play enabled
-- For first-time pairing, the Vita and the console on the same network
-- For internet play: a PS5, a PSN sign-in on the Vita, and a router that allows UDP hole punching (UPnP helps). Some networks block it, such as phone hotspots
+Cuando haya una versión:
 
-## Install
+- Un iPad mini 1 con iOS 9.3.5 y jailbreak, para instalar el `.deb`.
+- Una PS5 con Remote Play activado, en la misma red que el iPad.
+- El Account ID de tu cuenta de PSN y el PIN de vinculación de la PS5. Se escriben en la app y nunca se guardan en el repo.
+- Un DualSense y, si gana el camino del puente, un ESP32 clásico o una Pico W. Los ESP32-S3 y C3 no sirven: no tienen Bluetooth clásico.
 
-1. Download the latest `.vpk` from [Releases](https://github.com/mauricio-gg/vitaki-vitarps5/releases/latest).
-2. Copy it to your Vita.
-3. Install it with VitaShell.
+## El plan
 
-## First-time setup
+El trabajo lo hacen agentes de [Claude Code](https://claude.com/claude-code) en paralelo, cada uno dueño de una carpeta. Solo Axel prueba en el iPad.
 
-### Pair on your local network
+- [docs/ipad/README.md](docs/ipad/README.md): agentes, oleadas, actividades y puntos de control.
+- [docs/ipad/contracts.md](docs/ipad/contracts.md): los contratos C1 a C5 entre módulos.
+- [CLAUDE.md](CLAUDE.md): las reglas para los agentes.
 
-1. Put the Vita and the console on the same network.
-2. Open VitaRPS5. Your console should appear.
-3. Select it and enter the code from **PS5 > Settings > System > Remote Play > Pair Device**. Future connections will not ask again.
+## Mapa del repo
 
-If your PSN account is not detected, open the Profile page, select the Profile card and press X to refresh the Account ID.
+| Carpeta | Qué es |
+|---|---|
+| `lib/` | Core de Chiaki |
+| `ios/` | La app de iOS: puente con el core, video, audio, entrada e interfaz |
+| `bridge/` | Firmware del puente ESP32 y protocolo UDP del control |
+| `docs/ipad/` | Plan, contratos y guías |
+| `vita/`, `docs/design/`, `docs/screenshots/`, `tools/` | Código, documentos y herramientas de VitaRPS5, el proyecto del que parte este repo. Se quedan como referencia y para traer arreglos del core; no son parte de la app del iPad |
 
-### Play over the internet (PS5)
+## Compilar y probar
 
-Internet play needs the console to be **already paired on your local network first**. VitaRPS5 uses that saved pairing to connect remotely. If you skip this, the console simply does not show up.
+El build de iOS todavía no existe: lo arma la actividad A1.1 del plan. Por ahora, en Linux:
 
-1. Pair the console at home as above.
-2. In **Settings**, turn on **PSN Internet Mode**.
-3. On the **Profile** page, press X on the Connection card. The Vita shows a QR code and a sign-in link. Sign in to PSN on your phone or PC.
-4. Copy the full address of the page you land on, press X on the Connection card again and paste it in.
-5. When you see "PSN login complete", your paired consoles appear with a radio-wave icon.
+```sh
+# Pruebas del core (necesita cmake y OpenSSL de desarrollo)
+./tools/native_tests.sh
 
-On a console reachable both ways, tap X to connect locally or hold X for about 0.6 seconds to pick "Local Network" or "Internet". How this works and its limits: [docs/design/psn.md](docs/design/psn.md).
+# Los contratos en C compilan
+cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c
+```
 
-## Controls
+`./tools/build.sh` es el build de PS Vita que viene de VitaRPS5 y no sirve para el iPad.
 
-| Input | Action |
-|-------|--------|
-| **L + R + Start** (hold about 1 second) | Stop streaming, return to menu |
-| **Select + Start** | PS button |
+## Créditos
 
-## Getting help
+Este repo parte de [VitaRPS5](https://github.com/mauricio-gg/vitaki-vitarps5), de [solidEm](https://github.com/mauricio-gg), un cliente de Remote Play para PS Vita. VitaRPS5 viene del [vitaki-fork de ywnico](https://github.com/ywnico/vitaki-fork) y del port de Chiaki para Vita de [AAGaming](https://github.com/AAGaming00), y todos vienen de [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki), de Florian Märkl. De VitaRPS5 sale el core, ya probado en ARM de 32 bits con 512 MB de RAM como el iPad.
 
-How-to guides are in the [wiki](https://github.com/mauricio-gg/vitaki-vitarps5/wiki):
+Gracias también a las personas que VitaRPS5 agradece: [delroth](https://github.com/delroth) por el análisis del registro y el despertar de la consola, [grill2010](https://github.com/grill2010) por el de OAuth de PSN, [FioraAeterna](https://github.com/FioraAeterna) por FEC y corrección de errores, y [Epicpkmn11](https://github.com/Epicpkmn11) por los controles de movimiento.
 
-- [Configuration](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/Configuration): all `chiaki.toml` settings
-- [Logging](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/Logging)
-- [Crash dumps](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/Crash-dumps)
-- [Wi-Fi tips](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/Wi-Fi-tips)
-- [A/B stability testing](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/A-B-stability-testing)
+De qué commit de VitaRPS5 parte el repo y cómo traer sus arreglos: [UPSTREAM.md](UPSTREAM.md).
 
-Quick tips:
+Este proyecto no tiene relación con Sony. PlayStation, PS5 y DualSense son marcas de Sony Interactive Entertainment.
 
-- To reset all settings, delete `ux0:data/vita-chiaki/chiaki.toml`.
-- Pairing fails with PS5 error CE-110032-7: the account signed in on the PS5 is not the one this Vita sent. Sign in to PSN on the Vita with the same account as the PS5, open Profile, select the Account ID card and press X to refresh it, then pair again.
-- Testing builds write a log to `ux0:data/vita-chiaki/<number>_vitarps5-testing.log` (the number is a timestamp, so each run gets its own file). Release builds write `<number>_vitarps5.log` in the same folder.
+## Licencia
 
-Questions and ideas go to [Discussions](https://github.com/mauricio-gg/vitaki-vitarps5/discussions). Bugs go to [Issues](https://github.com/mauricio-gg/vitaki-vitarps5/issues).
-
-## How it works
-
-- [docs/design/](docs/design/README.md): how the code works. [Architecture](docs/design/architecture.md), [streaming](docs/design/streaming.md) and [PSN internet play](docs/design/psn.md).
-- [Wiki](https://github.com/mauricio-gg/vitaki-vitarps5/wiki): how-to guides.
-- [Discussions](https://github.com/mauricio-gg/vitaki-vitarps5/discussions): ideas and questions.
-
-## Building
-
-Builds run in Docker through `./tools/build.sh`. See [Build and deploy](https://github.com/mauricio-gg/vitaki-vitarps5/wiki/Build-and-deploy).
-
-## Support
-
-If you enjoy VitaRPS5, you can support its development.
-
-<div align="center"><a href="https://www.buymeacoffee.com/solidem"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></div>
-
-## Credits
-
-VitaRPS5 is its own project now. It was originally based on Vitaki, [ywnico's vitaki-fork](https://github.com/ywnico/vitaki-fork), which is itself a fork of [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki) by Florian Märkl, by way of [AAGaming's](https://github.com/AAGaming00) Chiaki Vita port. Special thanks to [Epicpkmn11](https://github.com/Epicpkmn11) for motion control contributions.
-
-Thanks also to the open-source tools that made reverse engineering possible: [Rizin](https://rizin.re), [Cutter](https://cutter.re), [Frida](https://www.frida.re) and [x64dbg](https://x64dbg.com), and to [delroth](https://github.com/delroth) for registration and wakeup protocol analysis, [grill2010](https://github.com/grill2010) for PSN OAuth analysis, and [FioraAeterna](https://github.com/FioraAeterna) for FEC and error correction insights.
-
-Developed by [solidEm](https://github.com/mauricio-gg) with the help of [Claude Code](https://claude.com/claude-code).
-
-## License
-
-[AGPL-3.0](LICENSES/AGPL-3.0-only-OpenSSL.txt)
+[AGPL-3.0](LICENSES/AGPL-3.0-only-OpenSSL.txt), como Chiaki y VitaRPS5. Quien distribuya la app tiene que publicar su código fuente.
