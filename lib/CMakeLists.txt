@@ -142,10 +142,18 @@ endif()
 
 target_include_directories(chiaki-lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# Without holepunch, common.h turns CHIAKI_CAN_USE_HOLEPUNCH off. PUBLIC because it changes the
+# layout of ChiakiSession and ChiakiRegistInfo, so every consumer must see the same value.
+if(NOT CHIAKI_LIB_ENABLE_HOLEPUNCH)
+	target_compile_definitions(chiaki-lib PUBLIC CHIAKI_DISABLE_HOLEPUNCH)
+endif()
+
 if(NOT CHIAKI_IS_VITA OR CHIAKI_ENABLE_VITA_HOLEPUNCH)
 	find_package(Threads REQUIRED)
 	target_link_libraries(chiaki-lib Threads::Threads)
+endif()
 
+if(CHIAKI_LIB_ENABLE_HOLEPUNCH)
 	if(CHIAKI_IS_VITA)
 		find_path(JSON_C_INCLUDE_DIR json-c/json.h)
 		find_library(JSON_C_LIBRARY NAMES json-c)
@@ -162,7 +170,7 @@ if(NOT CHIAKI_IS_VITA OR CHIAKI_ENABLE_VITA_HOLEPUNCH)
 	endif()
 endif()
 
-if(NOT CHIAKI_IS_VITA OR CHIAKI_ENABLE_VITA_HOLEPUNCH)
+if(CHIAKI_LIB_ENABLE_HOLEPUNCH)
 	if(CHIAKI_IS_VITA)
 		find_path(MINIUPNPC_INCLUDE_DIR miniupnpc/miniupnpc.h)
 		find_library(MINIUPNPC_LIBRARY NAMES miniupnpc)
@@ -200,7 +208,9 @@ else()
 	target_link_libraries(chiaki-lib OpenSSL::Crypto)
 endif()
 
-if (CHIAKI_USE_SYSTEM_CURL)
+if(NOT CHIAKI_NEEDS_CURL)
+	# LAN-only build: nothing in the lib uses curl.
+elseif (CHIAKI_USE_SYSTEM_CURL)
 	if (CHIAKI_ENABLE_VITA)
 		target_link_libraries(chiaki-lib ${CURL_LIBRARIES})
 	else()
@@ -224,7 +234,7 @@ if(CHIAKI_LIB_ENABLE_OPUS)
 	target_link_libraries(chiaki-lib ${Opus_LIBRARIES})
 endif()
 
-if(NOT CHIAKI_IS_VITA)
+if(NOT CHIAKI_IS_VITA AND CHIAKI_LIB_ENABLE_HOLEPUNCH)
 add_executable(holepunch-test include/chiaki/remote/holepunch.h src/remote/holepunch-test.c)
 target_link_libraries(holepunch-test chiaki-lib)
 endif()
