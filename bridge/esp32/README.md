@@ -15,7 +15,7 @@ DualSense --Bluetooth--> ESP32 --Wi-Fi, UDP 9400--> iPad (o la PC para probar)
 
 ## 1. Flashear el firmware, sin instalar nada
 
-Necesitas el archivo `ck_bridge_full.bin`: sale de la compilación (ver "Compilar desde el código") o del artefacto que deja el flujo de GitHub Actions del puente.
+Necesitas el archivo `ck_bridge_full.bin`. Lo deja cada corrida del flujo *Puente ESP32* en la pestaña *Actions* de GitHub, dentro del artefacto `ck_bridge_esp32` (un .zip), o sale de compilarlo (ver "Compilar desde el código").
 
 1. En Windows, si la placa no aparece como puerto COM, instala el driver de su chip USB: CP210x (Silicon Labs) o CH340 (WCH). Lo dice la placa o la página donde la compraste.
 2. Abre <https://espressif.github.io/esptool-js/> en Chrome o Edge.
