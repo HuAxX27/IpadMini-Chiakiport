@@ -22,6 +22,7 @@ option(CHIAKI_ENABLE_ANDROID "Enable Android (Use only as part of the Gradle Pro
 option(CHIAKI_ENABLE_BOREALIS "Enable Borealis GUI (For Nintendo Switch or PC)" OFF)
 option(CHIAKI_ENABLE_VITA "Enable PS Vita" OFF)
 option(CHIAKI_ENABLE_VITA_HOLEPUNCH "Enable PSN holepunch path on PS Vita" ON)
+option(CHIAKI_ENABLE_HOLEPUNCH "Enable PSN holepunch (Remote Play over the internet) outside PS Vita. OFF builds a LAN-only lib without curl, json-c and miniupnpc" ON)
 option(VITARPS5_CONGESTION_PARITY_INCLUSIVE_RECEIVED "GH #221 diagnostic A/B: count received FEC parity units toward the congestion 'received' value reported to the PS5 (default OFF = source-units-only baseline, unchanged since PR #213)" OFF)
 tri_option(CHIAKI_ENABLE_SETSU "Enable libsetsu for touchpad input from controller" AUTO)
 tri_option(CHIAKI_ENABLE_STEAMDECK_NATIVE "Enable sdeck for native gyro and haptic feedback from Steam Deck" OFF)
@@ -62,6 +63,20 @@ include(CPack)
 
 set(CHIAKI_IS_SWITCH ${NSWITCH})
 set(CHIAKI_IS_VITA ${CHIAKI_ENABLE_VITA})
+
+# PS Vita keeps its own holepunch switch; every other platform uses CHIAKI_ENABLE_HOLEPUNCH.
+if(CHIAKI_IS_VITA)
+	set(CHIAKI_LIB_ENABLE_HOLEPUNCH ${CHIAKI_ENABLE_VITA_HOLEPUNCH})
+else()
+	set(CHIAKI_LIB_ENABLE_HOLEPUNCH ${CHIAKI_ENABLE_HOLEPUNCH})
+endif()
+
+# Only holepunch needs curl in the lib. The Vita app links curl itself for PSN login, so Vita always gets it.
+if(CHIAKI_IS_VITA OR CHIAKI_LIB_ENABLE_HOLEPUNCH)
+	set(CHIAKI_NEEDS_CURL ON)
+else()
+	set(CHIAKI_NEEDS_CURL OFF)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake;${CMAKE_CURRENT_SOURCE_DIR}/setsu/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake;${CMAKE_CURRENT_SOURCE_DIR}/steamdeck_native/cmake")
@@ -105,7 +120,9 @@ if(CHIAKI_ENABLE_GUI)
 	pkg_check_modules(LIBPLACEBO REQUIRED libplacebo IMPORTED_TARGET)
 endif()
 
-if(CHIAKI_USE_SYSTEM_CURL)
+if(NOT CHIAKI_NEEDS_CURL)
+	set(CHIAKI_USE_SYSTEM_CURL OFF)
+elseif(CHIAKI_USE_SYSTEM_CURL)
 	if (CHIAKI_USE_SYSTEM_CURL STREQUAL AUTO)
 		if (CHIAKI_ENABLE_VITA)
 			if(CHIAKI_ENABLE_VITA_HOLEPUNCH)
