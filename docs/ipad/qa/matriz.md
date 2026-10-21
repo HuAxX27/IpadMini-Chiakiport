@@ -1,15 +1,15 @@
 # Matriz de pruebas
 
-Las configuraciones, los juegos y las corridas que Axel hace en cada punto de control. Cómo se mide y qué se reporta está en [`plan.md`](plan.md).
+Las configuraciones, los juegos y las corridas que TheHuAx hace en cada punto de control. Cómo se mide y qué se reporta está en [`plan.md`](plan.md).
 
 ## Ficha del equipo
 
-La llena Axel antes de P1 (ver [la ficha en el plan](plan.md#ficha-del-equipo-una-sola-vez)).
+La llena TheHuAx antes de P1 (ver [la ficha en el plan](plan.md#ficha-del-equipo-una-sola-vez)).
 
 | Dato | Valor |
 |---|---|
 | iPad | iPad mini de primera generación, MD531LL/A (A1432: Wi-Fi, 16 GB) |
-| iOS y jailbreak | iOS 9.3.5 (13G36); Phoenix y Cydia instalados, falta confirmar si el jailbreak está activo |
+| iOS y jailbreak | iOS 9.3.5 (13G36); jailbreak activo con Carbon (semi-untethered: se reactiva tras cada reinicio), con Cydia y OpenSSH |
 | Router y bandas | Falta confirmar si tiene 5 GHz |
 | PS5 y su conexión | Por Wi-Fi; falta confirmar la banda |
 | Placa del puente | Por comprar: ESP32 clásico o Pico W |
@@ -32,9 +32,9 @@ La más favorable, para que un problema apunte al software y no a la red.
 | Energía | Batería sin cargar, brillo a la mitad |
 | Otras apps | Ninguna abierta (cerrarlas desde el multitarea) |
 
-El iPad va en 5 GHz porque el ESP32 y el Bluetooth del DualSense usan 2.4 GHz; así no compiten por el mismo aire. Si el router de Axel solo tiene 2.4 GHz, la base pasa a 2.4 GHz y la variante V9 desaparece.
+El iPad va en 5 GHz porque el ESP32 y el Bluetooth del DualSense usan 2.4 GHz; así no compiten por el mismo aire. Si el router de TheHuAx solo tiene 2.4 GHz, la base pasa a 2.4 GHz y la variante V9 desaparece.
 
-La PS5 va por Wi-Fi porque así está en casa de Axel. Con el iPad también en Wi-Fi, el video cruza el aire dos veces, así que si algún día se puede pasar un cable a la PS5, V12 mide cuánto mejora.
+La PS5 va por Wi-Fi porque así está en casa de TheHuAx. Con el iPad también en Wi-Fi, el video cruza el aire dos veces, así que si algún día se puede pasar un cable a la PS5, V12 mide cuánto mejora.
 
 ## Variantes
 
@@ -48,8 +48,8 @@ Cada una cambia un solo factor de la base, salvo V4 y V5, que solo se corren cua
 | V4 | Resolución y fps | 360p a 60 | Respaldo si V3 no aguanta |
 | V5 | Resolución y fps | 720p a 60 | El techo del A5 |
 | V6 | Bitrate | 540p a 4000 kbps | Menos pérdidas lejos del router, si hacen falta |
-| V7 | Posición | Donde Axel juega de verdad (la define antes de P4) | El uso real |
-| V8 | Posición | Lo más lejos que Axel jugaría (la define antes de P5) | El límite de la red |
+| V7 | Posición | Donde TheHuAx juega de verdad (la define antes de P4) | El uso real |
+| V8 | Posición | Lo más lejos que TheHuAx jugaría (la define antes de P5) | El límite de la red |
 | V9 | Banda del iPad | 2.4 GHz | Interferencia con el ESP32 y el Bluetooth |
 | V10 | Control | Solo táctil | El respaldo sin puente |
 | V11 | Control | DualSense directo al iPad (A5.7) | Solo si la investigación encuentra camino |
@@ -93,7 +93,7 @@ Los ajustes por defecto de la 1.0 (A7.5) salen de R3 y R6 a R10: la resolución 
 
 ## Registro de resultados
 
-A7 agrega una fila por reporte de Axel.
+A7 agrega una fila por reporte de TheHuAx.
 
 | Fecha | Corrida o prueba | `.deb` | Resultado | fps | Perdidos | Memoria | Impresiones | Notas |
 |---|---|---|---|---|---|---|---|---|

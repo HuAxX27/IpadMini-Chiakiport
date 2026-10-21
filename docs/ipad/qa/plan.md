@@ -1,21 +1,21 @@
 # Plan de pruebas
 
-Qué se prueba, dónde, con qué meta y cómo se reporta, desde el hola mundo (P1) hasta la versión 1.0 (P5). Es la actividad A7.1 (#46) y entra en vigor cuando Axel lo aprueba. Las configuraciones, los juegos y qué corrida va en cada punto de control están en [`matriz.md`](matriz.md).
+Qué se prueba, dónde, con qué meta y cómo se reporta, desde el hola mundo (P1) hasta la versión 1.0 (P5). Es la actividad A7.1 (#46) y entra en vigor cuando TheHuAx lo aprueba. Las configuraciones, los juegos y qué corrida va en cada punto de control están en [`matriz.md`](matriz.md).
 
 ## Principios
 
-- **Lo que se puede probar en Linux se prueba en Linux**, en CI, antes de llegar al iPad. Axel solo prueba lo que necesita el iPad, la PS5 o el DualSense.
+- **Lo que se puede probar en Linux se prueba en Linux**, en CI, antes de llegar al iPad. TheHuAx solo prueba lo que necesita el iPad, la PS5 o el DualSense.
 - **Una configuración base y variantes de un solo cambio.** Cada variante cambia un factor respecto a la base, así un mal resultado apunta a una causa.
-- **Cada prueba en el iPad tiene pasos, duración y meta.** Las impresiones de Axel cuentan, con una escala del 1 al 5 para poder compararlas entre versiones.
-- **El tiempo de Axel es el recurso escaso.** Cada punto de control dice cuánto tiempo le pide (ver [Tiempo de Axel](#tiempo-de-axel)).
+- **Cada prueba en el iPad tiene pasos, duración y meta.** Las impresiones de TheHuAx cuentan, con una escala del 1 al 5 para poder compararlas entre versiones.
+- **El tiempo de TheHuAx es el recurso escaso.** Cada punto de control dice cuánto tiempo le pide (ver [Tiempo de TheHuAx](#tiempo-de-thehuax)).
 
 ## Niveles
 
 | Nivel | Quién | Dónde | Qué cubre |
 |---|---|---|---|
 | 1. Linux | Agentes y CI | Linux x86, y armv7 emulado | Lógica en C portable: core, video, audio, paquete del puente. Con las capturas reales de A2.8 |
-| 2. Hardware sin iPad | Axel | PC, ESP32 y DualSense | Firmware del puente contra un receptor en la PC (A5.2) |
-| 3. iPad | Axel | iPad, PS5 y la red de su casa | Puntos de control P1 a P5 y la prueba de humo de cada `.deb` |
+| 2. Hardware sin iPad | TheHuAx | PC, ESP32 y DualSense | Firmware del puente contra un receptor en la PC (A5.2) |
+| 3. iPad | TheHuAx | iPad, PS5 y la red de su casa | Puntos de control P1 a P5 y la prueba de humo de cada `.deb` |
 
 ### Nivel 1: pruebas en Linux
 
@@ -39,7 +39,7 @@ Las pruebas en x86 de 64 bits no ven los errores de 32 bits que prohíbe `CLAUDE
 
 ### Nivel 2: el puente sin iPad (A5.2)
 
-Axel empareja el DualSense con el ESP32 y abre el receptor de prueba en la PC.
+TheHuAx empareja el DualSense con el ESP32 y abre el receptor de prueba en la PC.
 
 - Pasos: mover cada stick hasta el tope en las cuatro direcciones, apretar cada botón y cada gatillo, apagar el control y volver a encenderlo.
 - Meta: todos los botones y gatillos cambian de valor, los sticks llegan a los extremos y vuelven a 0, el control se reconecta solo.
@@ -47,7 +47,7 @@ Axel empareja el DualSense con el ESP32 y abre el receptor de prueba en la PC.
 
 ### Nivel 3: en el iPad
 
-Solo Axel prueba en el iPad. Cada punto de control tiene su lista; las corridas con video (R1, R2...) están en `matriz.md`.
+Solo TheHuAx prueba en el iPad. Cada punto de control tiene su lista; las corridas con video (R1, R2...) están en `matriz.md`.
 
 #### P1: el hola mundo abre en el iPad
 
@@ -83,7 +83,7 @@ Solo Axel prueba en el iPad. Cada punto de control tiene su lista; las corridas 
 |---|---|---|
 | P4-1 | Corridas de P4 en la matriz | Metas de la columna P4 en [Metas](#metas) |
 | P4-2 | Todos los botones en un juego (A5.4): cruz, círculo, cuadrado, triángulo, L1, R1, L2 y R2 a medio apretar y a fondo, L3, R3, ambos sticks, cruceta, Options, Create, PS y clic del touchpad | Todos responden |
-| P4-3 | Sincronía de audio y video (A4.4) en una escena con golpes o saltos | Axel no nota desfase |
+| P4-3 | Sincronía de audio y video (A4.4) en una escena con golpes o saltos | TheHuAx no nota desfase |
 | P4-4 | Salir y volver a conectar 5 veces; botón de inicio durante la sesión y volver; bloquear y desbloquear la pantalla | Reconecta siempre y no se cierra |
 | P4-5 | Solo controles táctiles (corrida R4): recorrer el menú de la PS5 (A5.5) | Se navega sin control físico |
 
@@ -98,7 +98,7 @@ Solo Axel prueba en el iPad. Cada punto de control tiene su lista; las corridas 
 | P5-5 | Fallas a media sesión: apagar el Wi-Fi del iPad 5 s, mandar la PS5 a reposo, desconectar el ESP32 | Mensaje claro, sin cierre; el táctil sigue sirviendo sin el ESP32 |
 | P5-6 | Presión de memoria: abrir 5 pestañas en Safari, después la app, 5 minutos de R2 | La app no se cierra |
 | P5-7 | Vibración (A5.6, opcional) y conexión en un toque desde la lista (A6.6) | El control vibra; de la lista al juego en un toque |
-| P5-8 | Aceptación (A7.6): 30 minutos de juego libre | Axel responde que sí lo usaría para jugar |
+| P5-8 | Aceptación (A7.6): 30 minutos de juego libre | TheHuAx responde que sí lo usaría para jugar |
 
 #### Prueba de humo de cada `.deb`
 
@@ -121,16 +121,16 @@ Las métricas salen de `CKMetrics` (contrato C5), que `CKSession` llena una vez 
 | CPU | Resumen de A7.2 por SSH | Se registra | Se registra; la meta se fija en A7.2 con los primeros datos |
 | Del ESP32 al iPad | Herramienta de A5.3 | Mediana menor a 10 ms | Mediana menor a 10 ms |
 | Del botón a la pantalla | Cámara lenta (A7.4) | Se registra | Mediana menor a 120 ms |
-| Cierres de la app | Axel | Cero en 10 minutos | Cero en 30 minutos |
-| Batería | Axel, porcentaje al inicio y al final | Se registra | Se registra |
-| Calor | Axel: frío, tibio, caliente o incómodo | Se registra | No llega a incómodo en 30 minutos |
-| Impresiones del 1 al 5: imagen, fluidez, control y audio | Axel | 3 o más en todas | 4 o más en fluidez y control |
+| Cierres de la app | TheHuAx | Cero en 10 minutos | Cero en 30 minutos |
+| Batería | TheHuAx, porcentaje al inicio y al final | Se registra | Se registra |
+| Calor | TheHuAx: frío, tibio, caliente o incómodo | Se registra | No llega a incómodo en 30 minutos |
+| Impresiones del 1 al 5: imagen, fluidez, control y audio | TheHuAx | 3 o más en todas | 4 o más en fluidez y control |
 
 Si `decode_ms_avg` no se puede medir con la API que elija A3.2 (`AVSampleBufferDisplayLayer` no lo expone), esa fila se marca como no medible y manda `fps_decoded`.
 
 ### Latencia con cámara lenta
 
-Hace falta un teléfono que grabe a 240 cuadros por segundo. En el Galaxy S26 Ultra de Axel es el modo Cámara lenta, no la Súper cámara lenta, que solo graba un instante.
+Hace falta un teléfono que grabe a 240 cuadros por segundo. En el Galaxy S26 Ultra de TheHuAx es el modo Cámara lenta, no la Súper cámara lenta, que solo graba un instante.
 
 1. Configuración base, juego G2, en una parte donde saltar se vea al instante.
 2. Grabar en cámara lenta el DualSense y la pantalla del iPad juntos en el cuadro.
@@ -143,7 +143,7 @@ La referencia es la misma prueba con la app oficial de PS Remote Play en una PC,
 
 ### Ficha del equipo, una sola vez
 
-Antes de P1, Axel llena esto y A7 lo pasa a `matriz.md`. Sin datos de PSN, IPs ni direcciones MAC.
+Antes de P1, TheHuAx llena esto y A7 lo pasa a `matriz.md`. Sin datos de PSN, IPs ni direcciones MAC.
 
 | Dato | Para qué |
 |---|---|
@@ -152,14 +152,14 @@ Antes de P1, Axel llena esto y A7 lo pasa a `matriz.md`. Sin datos de PSN, IPs n
 | Espacio libre | El `.deb` y las capturas |
 | Router: marca y modelo, y si da 2.4 GHz y 5 GHz | Variante V9 |
 | PS5: modelo (estándar, digital o slim) y si va por cable o Wi-Fi | Configuración base |
-| Dónde está el router y dónde juega Axel, con distancia y paredes de por medio | Posiciones cerca, juego y lejos |
+| Dónde está el router y dónde juega TheHuAx, con distancia y paredes de por medio | Posiciones cerca, juego y lejos |
 | Placa del ESP32 que compró | A5.2 |
 | Teléfono con cámara lenta a 240 fps | Latencia (A7.4) |
 | Juegos que tiene para G3 y G4 | La matriz |
 
 ### Reporte de cada prueba
 
-Axel lo pega en el issue de la actividad o lo dice en el chat del proyecto, y A7 lo pasa al registro de `matriz.md`.
+TheHuAx lo pega en el issue de la actividad o lo dice en el chat del proyecto, y A7 lo pasa al registro de `matriz.md`.
 
 ```
 Prueba: P4-1, corrida R3   ·   .deb: (versión o número de PR)
@@ -170,11 +170,11 @@ Impresiones del 1 al 5: imagen _, fluidez _, control _, audio _
 Qué viste: cortes, artefactos, desfase o cierres, con el minuto aproximado
 ```
 
-Antes de A7.2 no hay resumen automático: Axel reporta lo que muestre la app y sus impresiones, y si algo se ve mal, un video corto con el teléfono vale más que una descripción.
+Antes de A7.2 no hay resumen automático: TheHuAx reporta lo que muestre la app y sus impresiones, y si algo se ve mal, un video corto con el teléfono vale más que una descripción.
 
 Cuando una prueba falla, A7 abre un issue con el reporte, la corrida y la versión, etiquetado con el agente dueño del módulo, y la prueba se repite con el arreglo.
 
-## Tiempo de Axel
+## Tiempo de TheHuAx
 
 | Punto | Tiempo aproximado |
 |---|---|
