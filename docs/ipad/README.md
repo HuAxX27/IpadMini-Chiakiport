@@ -8,7 +8,7 @@ Objetivo: jugar PS5 por Remote Play en un iPad mini de primera generación (iOS 
 - **Cifrado:** mbedTLS, que el core soporta (`CHIAKI_LIB_ENABLE_MBEDTLS`).
 - **Toolchain:** Theos con `iPhoneOS9.3.sdk` en Linux. Xcode 14 y posteriores ya no compilan armv7.
 - **Video:** H.264 con VideoToolbox. Sin HEVC ni HDR, que el A5 no decodifica.
-- **Control:** iOS 9 no expone el DualSense a las apps. El camino principal es un ESP32 clásico con Bluepad32 que manda el estado por UDP (`bridge/`). Se prueba antes si el DualSense conectado directo a la PS5 basta.
+- **Control:** iOS 9 no expone el DualSense a las apps. En P0 (2026-10-21) TheHuAx eligió dos caminos en paralelo: un ESP32 clásico con Bluepad32 que manda el estado por UDP (`bridge/`, A5.2 a A5.4), y la investigación de conectar el DualSense directo al iPad con jailbreak, por Bluetooth o por USB (A5.7). Si la conexión directa funciona, entra como otro `CKInputSource` y el puente queda opcional. Dejar el DualSense conectado a la PS5 queda como último recurso.
 
 ## Agentes
 
@@ -30,9 +30,9 @@ Cada oleada empieza solo cuando Axel aprueba el punto de control anterior en el 
 | Oleada | Actividades | Punto de control al cerrar |
 |---|---|---|
 | 0 Preparación | A0.1–A0.3, A5.1 | P0: camino del DualSense elegido |
-| 1 Cimientos | A0.5, A1.1–A1.6, A2.1–A2.3, A3.1, A5.2, A7.1 | P1: el hola mundo abre en el iPad |
+| 1 Cimientos | A0.5, A1.1–A1.6, A2.1–A2.3, A3.1, A5.2, A5.7, A7.1 | P1: el hola mundo abre en el iPad |
 | 2 Hito espolón | A2.4–A2.5, A4.2, A5.3, A5.5, A6.1, A6.4 | P2: la PS5 despierta desde el iPad (seguir o parar) |
 | 3 Integración | A2.6–A2.8, A3.2–A3.5, A4.1, A4.3–A4.4, A5.4, A6.2–A6.3, A6.5, A7.2 | P3: primer cuadro; P4: sesión jugable de 10 minutos |
-| 4 Afinación | A0.6, A5.6–A5.7, A6.6, A7.3–A7.6 | P5: versión 1.0, 30 minutos estables |
+| 4 Afinación | A0.6, A5.6, A6.6, A7.3–A7.6 | P5: versión 1.0, 30 minutos estables |
 
 Cada actividad tiene un issue en GitHub con su dependencia, su criterio de terminado y su tamaño.
