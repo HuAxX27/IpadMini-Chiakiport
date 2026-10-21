@@ -446,3 +446,22 @@ target_include_directories(manual_host_discovery_tests PRIVATE
 )
 
 add_test(NAME vitarps5_manual_host_discovery_tests COMMAND manual_host_discovery_tests)
+
+# ui_connection_ip_tests.c checks that a PSN console's Console IP is its display address, never
+# its name (issue #94). Standalone binary with its own main(); run natively (see the file header).
+add_executable(ui_connection_ip_tests
+    ui_connection_ip_tests.c
+    ../vita/src/ui/ui_value_labels.c
+    ../vita/src/ui/ui_console_status.c
+    ../vita/src/ip_address.c
+)
+
+target_include_directories(ui_connection_ip_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/stubs/manual_hosts
+    ${VITARPS5_ROOT}/vita/include
+    ${VITARPS5_ROOT}/lib/include
+    ${VITARPS5_ROOT}/lib/src
+    ${VITARPS5_ROOT}/vita/third_party
+)
+
+add_test(NAME vitarps5_ui_connection_ip_tests COMMAND ui_connection_ip_tests)
