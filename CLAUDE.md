@@ -42,6 +42,6 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 ## Ramas, PRs y pruebas en el iPad
 
 - Rama por actividad del plan: `a<agente>/<id>-<tema>`, por ejemplo `a3/a3.1-annexb-avcc`. Un PR por actividad, con el ID de la actividad en el título.
-- El cuerpo del PR sigue `.github/pull_request_template.md`. En "Design docs" vale `docs/ipad/` en lugar de `docs/design/`.
+- El cuerpo del PR sigue `.github/pull_request_template.md`.
 - Solo Axel prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
 - El trabajo se sigue en issues de GitHub, uno por actividad del plan.
