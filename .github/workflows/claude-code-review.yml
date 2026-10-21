@@ -24,14 +24,19 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+    # Skip cleanly when the repo has no token configured, instead of failing every PR.
+    env:
+      HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
 
     steps:
       - name: Checkout repository
+        if: env.HAS_CLAUDE_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Run Claude Code Review
+        if: env.HAS_CLAUDE_TOKEN == 'true'
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:

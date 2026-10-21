@@ -18,6 +18,6 @@ Lo hace A0 al cierre de cada oleada (actividad A0.4). Al resolver conflictos:
 
 - `CLAUDE.md`, `UPSTREAM.md`, `ios/`, `bridge/` y `docs/ipad/` son nuestros: se queda nuestra versión.
 - `lib/`: se queda la de upstream y se vuelven a aplicar nuestros parches de iOS, que deben ser pequeños y estar marcados.
-- Lo demás (`vita/`, `docs/design/`, `tools/`, `.github/`): se queda la de upstream, salvo `.github/FUNDING.yml` y `.github/ISSUE_TEMPLATE/bug_report.md`, que quitamos porque son del proyecto de Vita (el botón de donación de su autor y una plantilla de errores con rutas de la Vita). Si upstream los cambia, siguen borrados.
+- Lo demás (`vita/`, `docs/design/`, `tools/`, `.github/`): se queda la de upstream, salvo `.github/FUNDING.yml` y `.github/ISSUE_TEMPLATE/bug_report.md`, que quitamos porque son del proyecto de Vita (el botón de donación de su autor y una plantilla de errores con rutas de la Vita). Si upstream los cambia, siguen borrados. En `.github/workflows/claude-code-review.yml` se conserva nuestro salto cuando no hay `CLAUDE_CODE_OAUTH_TOKEN`.
 
 Anota aquí el nuevo commit base después de cada merge.
