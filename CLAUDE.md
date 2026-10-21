@@ -1,66 +1,47 @@
 # CLAUDE.md
 
-VitaRPS5: a PS Vita Remote Play client for PS5/PS4. It is its own project now; it was originally based on Vitaki (ywnico's vitaki-fork), itself a fork of Chiaki via AAGaming's Vita port. Hardware limits that matter: 960x544 screen, tight RAM and CPU, rendering through vita2d.
+IpadMini-Chiakiport: un cliente de PS Remote Play para el iPad mini de primera generación, pensado para jugar PS5 con un DualSense original. Parte del código de [VitaRPS5](https://github.com/mauricio-gg/vitaki-vitarps5) (ver `UPSTREAM.md`), que a su vez viene de Chiaki.
 
-## Read first
+Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a 1 GHz, armv7 de 32 bits), 512 MB de RAM, pantalla de 1024×768, iOS 9.3.5 con jailbreak, decodificación H.264 por hardware y nada de HEVC.
 
-Read `docs/design/README.md` before changing anything. It is the register of the living design docs (architecture, streaming, PSN, UI mocks) and says how the app works.
+## Lee primero
 
-## Hard rule: design docs
+1. `docs/ipad/README.md`: el plan de trabajo, los agentes y qué carpeta posee cada uno.
+2. `docs/ipad/contracts.md`: los contratos C1 a C5 entre agentes. Programa contra ellos, no contra el código de otro agente.
 
-Any change to behaviour, structure or a decision covered by a file in `docs/design/` updates that file in the same PR. The Team Lead's review checks this and does not approve a PR that leaves a design doc out of date. Every PR states it on the "Design docs:" line of the PR template.
+## Mapa del repo
 
-## Build (Docker only)
+| Carpeta | Qué es | Dueño |
+|---|---|---|
+| `lib/` | Core de Chiaki, tratado como upstream | A2 |
+| `ios/Bridge/` | Contratos C1 y C5, y la clase `CKSession` | A2 (C5: A0) |
+| `ios/Video/`, `ios/Audio/`, `ios/Input/`, `ios/UI/` | Módulos de la app de iOS | A3, A4, A5, A6 |
+| `ios/toolchain/`, `.github/workflows/ios-*` | Theos, SDK 9.3, CI de iOS | A1 |
+| `bridge/` | Puente ESP32 para el DualSense y su protocolo UDP | A5 |
+| `docs/ipad/` | Plan, contratos, guías para Axel | A0 |
+| `vita/`, `docs/design/`, `tools/` | Código y documentos de VitaRPS5, solo como referencia | Nadie: no se editan |
 
-Never call VitaSDK by hand. All commands run from the repo root.
+## Reglas duras
 
-| Command | What it does |
-|---|---|
-| `./tools/build.sh` | Release build. Bumps the version, writes `build/vitarps5.vpk` and a versioned `.vpk` copy in the repo root. |
-| `./tools/build.sh --env testing` | Loads `.env.testing`. Required for any on-device streaming validation, because it enables runtime logs. |
-| `./tools/build.sh debug` | Debug build with symbols. Also bumps the version. |
-| `./tools/build.sh test` | Cross-compiles the test suite in `build-test/`. See pitfalls: it does not run anything. |
-| `./tools/native_tests.sh` | Builds every host test in `test/` natively (no Docker, needs cmake and OpenSSL dev files) and runs them all with ctest. Build output goes to `build-native-tests/`. |
-| `./tools/build.sh format` | Runs clang-format over the sources. |
-| `./tools/build.sh shell` | Interactive shell inside the build container. |
-| `./tools/build.sh deploy <vita_ip>` | Uploads `build/vitarps5.vpk` to the Vita over FTP (port 1337). Build first. |
+- **Piso de API: iOS 9.0, armv7.** Nada marcado como disponible desde iOS 10 o posterior (por ejemplo `clock_gettime`, que el core usa y hay que parchear). No supongas punteros de 64 bits ni `size_t` de 64 bits.
+- **Lógica en C portable con pruebas en Linux; la capa de iOS, delgada.** Los agentes trabajan sin iPad: lo que se pueda probar en Linux se prueba en Linux.
+- **`lib/` se cambia solo cuando hace falta**, con el cambio mínimo, protegido con `#if defined(__APPLE__) && TARGET_OS_IPHONE` cuando no aplique a otras plataformas, y explicado en el PR.
+- **Un contrato se cambia solo en un PR propio** que aprueba A0. Si necesitas algo que el contrato no da, pídelo en vez de rodearlo.
+- **Cada agente toca solo su carpeta.** Un cambio fuera de ella va en un PR aparte y se avisa al dueño.
+- **Nada de reservas de memoria por cuadro** en video, audio o entrada.
+- **Sin datos de PSN en el repo:** ni Account ID, ni PIN, ni llaves de registro.
+- **El proyecto es AGPLv3.** No agregues dependencias cerradas.
 
-## Repo map
+## Compilar y probar
 
-- `vita/src/`, `vita/include/`: the Vita app (entry point, UI, audio, video, input, host/session logic).
-- `lib/`: Chiaki core, treated as upstream. Change it only when necessary and say why in the PR.
-- `third-party/`: vendored dependencies.
-- `assets/`, `vita/assets/`, `vita/res/`: images, certificates and Vita bundle resources.
-- `tools/`: `build.sh` and analysis helpers.
-- `docs/design/`: the living design docs.
+- Pruebas del core en Linux: `./tools/native_tests.sh` (heredado de VitaRPS5; necesita cmake y OpenSSL de desarrollo).
+- Contratos en C: `cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c`.
+- App de iOS: la arma A1 (Theos con `iPhoneOS9.3.sdk`). Hasta entonces no hay build de iOS.
+- `./tools/build.sh` es el build de PS Vita en Docker: no lo uses para el iPad.
 
-## Where things live
+## Ramas, PRs y pruebas en el iPad
 
-- How-tos: the GitHub wiki, https://github.com/mauricio-gg/vitaki-vitarps5/wiki
-- Ideas and investigation write-ups: GitHub Discussions.
-- Work is tracked only in GitHub issues. No TODO files, no progress notes in the repo.
-- PRs are merged by the maintainer with admin override, because agents post as the repo owner and a non-author approval is impossible.
-
-## Pitfalls
-
-- `./tools/build.sh test` only cross-compiles for the Vita (ARM). It never runs the tests (#222). Run them with `./tools/native_tests.sh`; CI runs the same command.
-- Testing logs (`*_vitarps5-testing.log`) are seen as binary by BSD grep. Always use `grep -a`, or a missing match proves nothing.
-- Vita thread priority: a lower number is a higher priority. Threads in `lib/` default to about 160 and must be promoted explicitly.
-- Latency-sensitive code is `vita/src/host.c`, `vita/src/video.c` and `vita/src/audio.c`. Read `docs/design/streaming.md` before changing polling loops, priorities or buffer sizes.
-- Run `./tools/build.sh format` before pushing any C change.
-- VitaSDK headers exist only inside Docker, so clangd errors about them are false positives.
-- The build container runs as the host user (`-u $(id -u):$(id -g)`, already set in `tools/build.sh`). Running it as another uid makes CMake fail with a misleading "pkgRedirects" error that is really a permission denial.
-- Every interaction must work by touch and by controller.
-- Use the project logging, not raw `printf`.
-- No per-frame allocations; reuse textures.
-- The project is AGPLv3. Do not add closed-source dependencies.
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Rama por actividad del plan: `a<agente>/<id>-<tema>`, por ejemplo `a3/a3.1-annexb-avcc`. Un PR por actividad, con el ID de la actividad en el título.
+- El cuerpo del PR sigue `.github/pull_request_template.md`. En "Design docs" vale `docs/ipad/` en lugar de `docs/design/`.
+- Solo Axel prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
+- El trabajo se sigue en issues de GitHub, uno por actividad del plan.
