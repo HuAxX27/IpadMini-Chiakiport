@@ -8,13 +8,14 @@ ARG BASE_IMAGE=ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ec
 FROM ${BASE_IMAGE}
 
 # Theos needs make, perl, fakeroot and rsync; the toolchain links libtinfo,
-# libuuid and libxml2. cmake, ninja, python3 and pkg-config are for building
-# the core and its dependencies (A1.3, A1.4); openssh-client for deploys (A1.6).
+# libuuid and libxml2. cmake, ninja, python3, protoc and python3-protobuf build
+# the core and its dependencies (nanopb generates code with the last two);
+# openssh-client is for deploys (A1.6).
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		ca-certificates curl git xz-utils make perl fakeroot rsync zip unzip file \
 		libtinfo6 libuuid1 libxml2 \
-		cmake ninja-build python3 pkg-config \
+		cmake ninja-build python3 pkg-config protobuf-compiler python3-protobuf \
 		openssh-client \
 	&& rm -rf /var/lib/apt/lists/*
 
