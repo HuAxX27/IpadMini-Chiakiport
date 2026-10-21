@@ -46,7 +46,7 @@ Cuando haya una versión:
 
 ## El plan
 
-El trabajo lo hacen agentes de [Claude Code](https://claude.com/claude-code) en paralelo, cada uno dueño de una carpeta. Solo Axel prueba en el iPad.
+El trabajo lo hacen agentes de [Claude Code](https://claude.com/claude-code) en paralelo, cada uno dueño de una carpeta. Solo TheHuAx prueba en el iPad.
 
 - [docs/ipad/README.md](docs/ipad/README.md): agentes, oleadas, actividades y puntos de control.
 - [docs/ipad/contracts.md](docs/ipad/contracts.md): los contratos C1 a C5 entre módulos.

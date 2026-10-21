@@ -25,7 +25,7 @@ Objetivo: jugar PS5 por Remote Play en un iPad mini de primera generación (iOS 
 
 ## Oleadas y puntos de control
 
-Cada oleada empieza solo cuando Axel aprueba el punto de control anterior en el iPad.
+Cada oleada empieza solo cuando TheHuAx aprueba el punto de control anterior en el iPad.
 
 | Oleada | Actividades | Punto de control al cerrar |
 |---|---|---|
