@@ -8,7 +8,9 @@
 #      Objective-C, with the defines the core is built with.
 #   3. The core (core-check.sh).
 #   4. Every Theos package under ios/ (a folder with a Makefile and a control
-#      file), as a .deb.
+#      file), as a .deb. Theos builds with -Wall -Werror, and every package
+#      also gets -Werror=unguarded-availability: an API newer than iOS 9.0
+#      used without @available fails the build even if a Makefile forgets it.
 #
 #   THEOS=/opt/theos ios/toolchain/ci-ipad.sh
 #
@@ -53,7 +55,7 @@ while IFS= read -r control; do
 	[ -f "$dir/Makefile" ] || continue
 	name="${dir#"$root"/}"
 	echo "==> $name"
-	make -C "$dir" package FINALPACKAGE=1 \
+	CFLAGS="${CFLAGS:+$CFLAGS }-Werror=unguarded-availability" make -C "$dir" package FINALPACKAGE=1 \
 		_THEOS_LOCAL_DATA_DIR="$out/theos/${name//\//_}" THEOS_PACKAGE_DIR="$out/debs"
 	found=$((found + 1))
 done < <(find "$root/ios" -name control -not -path '*/.theos/*' | sort)

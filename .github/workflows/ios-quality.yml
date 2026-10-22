@@ -1,0 +1,116 @@
+# Quality workflow (A1)
+#
+# Runs on every PR and every push to main, whatever it touches, next to iOS CI.
+# Each job runs one step of .github/quality/check.sh, the same script a PC runs
+# before pushing (.github/quality/README.md):
+#
+#   - secrets: gitleaks on the PR's commits and on the tree, with the PSN and
+#     Wi-Fi rules of .gitleaks.toml; the owner's name and the words of the
+#     CK_PRIVATE_WORDS secret in the tree, the commits and the PR's title and
+#     body; nothing that must stay out of the repo (packages, the iOS SDK,
+#     sdkconfig, files over 2 MB); Theos makefiles that keep -Werror.
+#   - static-analysis: cppcheck and clang's static analyzer on the C of ios/
+#     and bridge/.
+#   - lint: shellcheck, actionlint and the Python files.
+#
+# On a PR the checked commits are base..head and the tree is the merge result,
+# what main will hold. "edited" is listed so a new PR title or body is checked
+# again; the whole workflow reruns, so no check can be left skipped.
+
+name: Quality
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  # A newer push or edit replaces a PR's run; runs on main all finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CK_REQUIRE_TOOLS: '1'
+  CK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+  CK_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: secrets and private data
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: secrets and private data
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: .github/quality/install-tools.sh gitleaks
+
+      - name: Secrets (gitleaks)
+        run: .github/quality/check.sh secrets
+
+      - name: Owner's name, protected words and what can be committed
+        if: success() || failure()
+        env:
+          CK_PRIVATE_WORDS: ${{ secrets.CK_PRIVATE_WORDS }}
+        run: .github/quality/check.sh private
+
+  # ---------------------------------------------------------------------------
+  # Job 2: static analysis
+  # The analyzer runs the Linux test suites of ios/ and bridge/ under
+  # scan-build; on a report, the HTML pages are kept as the "scan-build"
+  # artifact.
+  # ---------------------------------------------------------------------------
+  static-analysis:
+    name: static analysis (ios, bridge)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck and scan-build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cppcheck clang-tools
+
+      - name: cppcheck and scan-build
+        run: .github/quality/check.sh analysis
+
+      - name: Upload the scan-build reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-build
+          path: build-quality/scan-build
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Job 3: lint
+  # shellcheck comes with the runner image.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint (shell, workflows, python)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: .github/quality/install-tools.sh actionlint
+
+      - name: shellcheck, actionlint and Python
+        run: .github/quality/check.sh lint

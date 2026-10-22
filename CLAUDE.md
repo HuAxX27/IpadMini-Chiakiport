@@ -16,7 +16,7 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 | `lib/` | Core de Chiaki, tratado como upstream | A2 |
 | `ios/Bridge/` | Contratos C1 y C5, y la clase `CKSession` | A2 (C5: A0) |
 | `ios/Video/`, `ios/Audio/`, `ios/Input/`, `ios/UI/` | Módulos de la app de iOS | A3, A4, A5, A6 |
-| `ios/toolchain/`, `.github/workflows/ios-*` | Theos, SDK 9.3, CI de iOS | A1 |
+| `ios/toolchain/`, `.github/workflows/ios-*`, `.github/quality/` | Theos, SDK 9.3, CI de iOS y validaciones de calidad | A1 |
 | `bridge/` | Puente ESP32 para el DualSense y su protocolo UDP | A5 |
 | `docs/ipad/` | Plan, contratos, guías para TheHuAx | A0 |
 | `vita/`, `docs/design/`, `tools/` | Código y documentos de VitaRPS5, solo como referencia | Nadie: no se editan |
@@ -39,10 +39,12 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 - Contratos en C: `cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c`.
 - App de iOS: la arma A1 (Theos con `iPhoneOS9.3.sdk`). Hasta entonces no hay build de iOS.
 - `./tools/build.sh` es el build de PS Vita en Docker: no lo uses para el iPad.
+- Antes de subir una rama: `.github/quality/check.sh` (secretos, datos de PSN, el nombre del dueño, análisis estático y lint). Corre igual en cada PR; cómo instalar lo que pide y qué hacer si falla está en `.github/quality/README.md`.
 
 ## Ramas, PRs y pruebas en el iPad
 
 - Rama por actividad del plan: `a<agente>/<id>-<tema>`, por ejemplo `a3/a3.1-annexb-avcc`. Un PR por actividad, con el ID de la actividad en el título.
 - El cuerpo del PR sigue `.github/pull_request_template.md`.
 - Solo TheHuAx, el dueño del repo, prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
+- **Fusión:** cuando el CI de un PR queda en verde y no le queda ningún comentario de revisión pendiente, el agente que lo abrió lo fusiona a `main` sin preguntarle a TheHuAx y borra la rama. Hay dos excepciones. Un PR que cambia lo que se ve o se siente en el iPad espera a que TheHuAx lo pruebe y diga que funciona. Un PR que cambia un contrato espera la aprobación de A0.
 - El trabajo se sigue en issues de GitHub, uno por actividad del plan.

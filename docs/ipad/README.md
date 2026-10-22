@@ -15,7 +15,7 @@ Objetivo: jugar PS5 por Remote Play en un iPad mini de primera generación (iOS 
 | Agente | Responsabilidad | Carpeta |
 |---|---|---|
 | A0 Coordinador | Contratos, integración, upstream, guías, versión final | `docs/ipad/`, `ios/Bridge/CKSettings.h` |
-| A1 Toolchain y CI | Theos, SDK 9.3, dependencias para armv7, CI | `ios/toolchain/`, `.github/workflows/ios-*` |
+| A1 Toolchain y CI | Theos, SDK 9.3, dependencias para armv7, CI y validaciones de calidad | `ios/toolchain/`, `.github/workflows/ios-*`, `.github/quality/` |
 | A2 Core | Parches de iOS 9 en `lib/`, CLI `ckctl`, `CKSession` | `lib/`, `ios/Bridge/`, `ios/cli/` |
 | A3 Video | De Annex B a VideoToolbox y a la pantalla | `ios/Video/` |
 | A4 Audio | De Opus a la bocina, sincronía | `ios/Audio/` |

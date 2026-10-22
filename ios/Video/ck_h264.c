@@ -100,7 +100,9 @@ CKH264Result ck_h264_annexb_to_avcc(const uint8_t *in, size_t in_size, uint32_t 
 
 		size_t unit_size = CK_H264_AVCC_LENGTH_SIZE + nal_size;
 		// Once a unit does not fit, keep counting so the caller learns the size needed.
-		if(needed <= out_capacity && unit_size <= out_capacity - needed)
+		// With out NULL, out_capacity is 0 and nothing fits; testing out too lets the
+		// static analyzer see it.
+		if(out && needed <= out_capacity && unit_size <= out_capacity - needed)
 		{
 			uint8_t *dst = out + needed;
 			dst[0] = (uint8_t)(nal_size >> 24);
