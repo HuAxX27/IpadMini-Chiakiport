@@ -1,0 +1,23 @@
+menu "CK bridge"
+
+    config CKBRIDGE_WIFI_SSID
+        string "Default Wi-Fi network name"
+        default ""
+        help
+            Used until a name is saved from the console with "ssid".
+            Leave it empty in any build that is shared or committed.
+
+    config CKBRIDGE_WIFI_PASSWORD
+        string "Default Wi-Fi password"
+        default ""
+        help
+            Used until a password is saved from the console with "password".
+            Leave it empty in any build that is shared or committed.
+
+    config CKBRIDGE_IPAD_ADDR
+        string "Default target IPv4 address (the iPad)"
+        default ""
+        help
+            Used until an address is saved from the console with "ipad".
+
+endmenu
