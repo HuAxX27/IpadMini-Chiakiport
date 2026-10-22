@@ -4,4 +4,4 @@ Firmware para un ESP32 clásico (o un Raspberry Pi Pico W) con [Bluepad32](https
 
 Los ESP32-S3 y C3 no sirven: solo tienen Bluetooth LE, y el DualSense usa Bluetooth clásico.
 
-Aún vacío: lo llena A5 en la actividad A5.2 si en el punto de control P0 se elige este camino.
+Aún vacío: lo llena A5 en la actividad A5.2.

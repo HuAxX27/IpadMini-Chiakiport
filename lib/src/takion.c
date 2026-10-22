@@ -16,7 +16,12 @@
 #include <assert.h>
 
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+// Gestalt() and CoreServices are macOS only. iOS 9 has no IP_DONTFRAG either (it arrived in iOS 14),
+// so on iOS takion takes the "Don't fragment is not supported" path, like macOS before Big Sur.
+#if !TARGET_OS_IPHONE
 #include <CoreServices/CoreServices.h>
+#endif
 #endif
 
 #ifdef _WIN32
@@ -378,7 +383,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 	takion->enable_dualsense = info->enable_dualsense;
 
 	CHIAKI_LOGI(takion->log, "Takion connecting (version %u)", (unsigned int)info->protocol_version);
+#if !(defined(__APPLE__) && TARGET_OS_IPHONE) // iOS never sets Don't Fragment, see the includes
 	bool mac_dontfrag = true;
+#endif
 
 	ChiakiErrorCode err = chiaki_stop_pipe_init(&takion->stop_pipe);
 	if(err != CHIAKI_ERR_SUCCESS)
@@ -436,7 +443,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 			}
 		}
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
 		SInt32 majorVersion;
 		Gestalt(gestaltSystemVersionMajor, &majorVersion);
 		if(majorVersion < 11)
@@ -449,7 +456,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 #if defined(_WIN32)
 			const DWORD dontfragment_val = 1;
 			r = setsockopt(takion->sock, IPPROTO_IP, IP_DONTFRAGMENT, (const CHIAKI_SOCKET_BUF_TYPE)&dontfragment_val, sizeof(dontfragment_val));
-#elif defined(__FreeBSD__) || defined(__SWITCH__) || defined(__APPLE__)
+#elif defined(__FreeBSD__) || defined(__SWITCH__) || (defined(__APPLE__) && !TARGET_OS_IPHONE)
 			if(mac_dontfrag)
 			{
 				const int dontfrag_val = 1;
@@ -486,7 +493,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 #if defined(_WIN32)
 			const DWORD dontfragment_val = 0;
 			r = setsockopt(takion->sock, IPPROTO_IP, IP_DONTFRAGMENT, (const CHIAKI_SOCKET_BUF_TYPE)&dontfragment_val, sizeof(dontfragment_val));
-#elif defined(__FreeBSD__) || defined(__SWITCH__) || defined(__APPLE__)
+#elif defined(__FreeBSD__) || defined(__SWITCH__) || (defined(__APPLE__) && !TARGET_OS_IPHONE)
 			if(mac_dontfrag)
 			{
 				const int dontfrag_val = 0;
@@ -561,7 +568,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 		}
 		if(info->ip_dontfrag)
 		{
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
 			SInt32 majorVersion;
 			Gestalt(gestaltSystemVersionMajor, &majorVersion);
 			if(majorVersion < 11)
@@ -572,7 +579,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 #if defined(_WIN32)
 			const DWORD dontfragment_val = 1;
 			r = setsockopt(takion->sock, IPPROTO_IP, IP_DONTFRAGMENT, (const CHIAKI_SOCKET_BUF_TYPE)&dontfragment_val, sizeof(dontfragment_val));
-#elif defined(__FreeBSD__) || defined(__SWITCH__) || defined(__APPLE__)
+#elif defined(__FreeBSD__) || defined(__SWITCH__) || (defined(__APPLE__) && !TARGET_OS_IPHONE)
 			const int dontfrag_val = 1;
 			r = setsockopt(takion->sock, IPPROTO_IP, IP_DONTFRAG, (const CHIAKI_SOCKET_BUF_TYPE)&dontfrag_val, sizeof(dontfrag_val));
 #elif defined(IP_PMTUDISC_DO)

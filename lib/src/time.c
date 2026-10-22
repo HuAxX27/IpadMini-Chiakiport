@@ -11,6 +11,13 @@
 #ifdef __PSVITA__
 #include <psp2/kernel/processmgr.h>
 #endif
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+// clock_gettime() only exists from iOS 10; the iPad mini 1 runs iOS 9.3.5.
+#include <mach/mach_time.h>
+#endif
+#endif
 
 CHIAKI_EXPORT uint64_t chiaki_time_now_monotonic_us()
 {
@@ -28,6 +35,19 @@ CHIAKI_EXPORT uint64_t chiaki_time_now_monotonic_us()
 	SceKernelSysClock clk;
 	sceKernelGetProcessTime(&clk);
 	return clk;
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+	// Filled on first use. Two threads racing here both store the same values, and a half-written
+	// copy shows a zero field, which only repeats the call.
+	static mach_timebase_info_data_t timebase;
+	mach_timebase_info_data_t tb = timebase;
+	if(!tb.numer || !tb.denom)
+	{
+		if(mach_timebase_info(&tb) != KERN_SUCCESS || !tb.denom)
+			return 0;
+		timebase = tb;
+	}
+	// The A5 ticks at 24 MHz (numer 125, denom 3), so ticks * numer stays far below 2^64.
+	return mach_absolute_time() * tb.numer / tb.denom / 1000;
 #else
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC, &time);

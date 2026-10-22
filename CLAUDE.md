@@ -18,7 +18,7 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 | `ios/Video/`, `ios/Audio/`, `ios/Input/`, `ios/UI/` | Módulos de la app de iOS | A3, A4, A5, A6 |
 | `ios/toolchain/`, `.github/workflows/ios-*` | Theos, SDK 9.3, CI de iOS | A1 |
 | `bridge/` | Puente ESP32 para el DualSense y su protocolo UDP | A5 |
-| `docs/ipad/` | Plan, contratos, guías para Axel | A0 |
+| `docs/ipad/` | Plan, contratos, guías para TheHuAx | A0 |
 | `vita/`, `docs/design/`, `tools/` | Código y documentos de VitaRPS5, solo como referencia | Nadie: no se editan |
 
 ## Reglas duras
@@ -30,6 +30,7 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 - **Cada agente toca solo su carpeta.** Un cambio fuera de ella va en un PR aparte y se avisa al dueño.
 - **Nada de reservas de memoria por cuadro** en video, audio o entrada.
 - **Sin datos de PSN en el repo:** ni Account ID, ni PIN, ni llaves de registro.
+- **Sin nombres reales del dueño:** en ningún archivo del repo. Si hace falta nombrarlo, usa `TheHuAx`.
 - **El proyecto es AGPLv3.** No agregues dependencias cerradas.
 
 ## Compilar y probar
@@ -43,5 +44,5 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 
 - Rama por actividad del plan: `a<agente>/<id>-<tema>`, por ejemplo `a3/a3.1-annexb-avcc`. Un PR por actividad, con el ID de la actividad en el título.
 - El cuerpo del PR sigue `.github/pull_request_template.md`.
-- Solo Axel prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
+- Solo TheHuAx, el dueño del repo, prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
 - El trabajo se sigue en issues de GitHub, uno por actividad del plan.
