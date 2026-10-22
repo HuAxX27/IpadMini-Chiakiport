@@ -55,7 +55,7 @@ if(NOT CHIAKI_USE_SYSTEM_JERASURE)
 	add_library(Jerasure::Jerasure ALIAS jerasure)
 endif()
 
-if(NOT CHIAKI_USE_SYSTEM_CURL)
+if(CHIAKI_NEEDS_CURL AND NOT CHIAKI_USE_SYSTEM_CURL)
 	##################
 	# libcurl (with experimental WebSocket support enabled)
 	##################

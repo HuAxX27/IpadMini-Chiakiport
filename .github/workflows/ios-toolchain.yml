@@ -1,0 +1,70 @@
+# iOS toolchain workflow (A1)
+#
+# Checks that the iPad mini 1 toolchain (Theos, clang 11 / ld64-609 and the
+# patched iOS 9.3 SDK, pinned in ios/toolchain/versions.env) still installs and
+# still builds a signed armv7 binary for iOS 9.0, both ways people use it: the
+# Docker image and the plain install script on an Ubuntu host.
+# Runs only when the toolchain itself changes; the .deb build on every PR
+# comes with A1.5.
+
+name: iOS toolchain
+
+on:
+  pull_request:
+    paths:
+      - 'ios/toolchain/**'
+      - '.github/workflows/ios-toolchain.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'ios/toolchain/**'
+      - '.github/workflows/ios-toolchain.yml'
+  workflow_dispatch:
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: Docker image
+  # Builds ios/toolchain/Dockerfile and runs the smoke test inside it as a
+  # non-root user, the way it runs on a Linux PC with the repo mounted.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker image + smoke test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build the toolchain image
+        run: docker build -t ck-ios-toolchain ios/toolchain
+
+      - name: Smoke test (armv7, iOS 9.0, SDK 9.3)
+        run: |
+          docker run --rm -v "$PWD":/work -u "$(id -u):$(id -g)" \
+            ck-ios-toolchain ios/toolchain/smoke-test.sh
+
+  # ---------------------------------------------------------------------------
+  # Job 2: install script on the host
+  # Same toolchain without Docker, through install-theos.sh, as on a Linux PC
+  # that builds natively.
+  # ---------------------------------------------------------------------------
+  native:
+    name: install script + smoke test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Theos dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fakeroot rsync libtinfo6
+
+      - name: Install Theos, toolchain and SDK
+        run: THEOS="$RUNNER_TEMP/theos" ios/toolchain/install-theos.sh
+
+      - name: Smoke test (armv7, iOS 9.0, SDK 9.3)
+        run: THEOS="$RUNNER_TEMP/theos" ios/toolchain/smoke-test.sh

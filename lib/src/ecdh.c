@@ -97,10 +97,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_set_local_key(ChiakiECDH *ecdh, const 
 	if(r != 0)
 		return CHIAKI_ERR_UNKNOWN;
 
-	// regen key
-	r = mbedtls_ecdh_gen_public(&ecdh->ctx.grp, &ecdh->ctx.d, &ecdh->ctx.Q, mbedtls_ctr_drbg_random, &ecdh->drbg);
-	if(r != 0)
-		return CHIAKI_ERR_UNKNOWN;
+	// No mbedtls_ecdh_gen_public() here: it draws a new random private key and the given pair is lost.
 
 	return CHIAKI_ERR_SUCCESS;
 #else
