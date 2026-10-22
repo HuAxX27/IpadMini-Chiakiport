@@ -32,7 +32,7 @@ IpadMini-Chiakiport es un cliente de PS Remote Play para el iPad mini 1 con iOS 
 - **Core:** el protocolo de Remote Play de Chiaki, en C (`lib/`), con parches pequeños para iOS 9. Por ejemplo, `clock_gettime` no existe antes de iOS 10.
 - **Video:** VideoToolbox decodifica el H.264 que manda la PS5.
 - **Audio:** Opus decodificado y reproducido con AudioQueue o RemoteIO.
-- **Control:** iOS 9 no deja leer un DualSense directamente. El camino principal es un puente: un ESP32 clásico o una Raspberry Pi Pico W con [Bluepad32](https://github.com/ricardoquesada/bluepad32) recibe el DualSense por Bluetooth y manda su estado al iPad por UDP. En paralelo se investiga conectar el DualSense directo al iPad con jailbreak, por Bluetooth o por USB. Si funciona, el puente queda opcional.
+- **Control:** iOS 9 no deja leer un DualSense directamente. El camino principal es conectar el DualSense directo al iPad aprovechando el jailbreak, por Bluetooth o por USB. Como respaldo hay un puente, en pausa por ahora: un ESP32 clásico con [Bluepad32](https://github.com/ricardoquesada/bluepad32) recibe el DualSense por Bluetooth y manda su estado al iPad por UDP.
 - **App:** UIKit para iOS 9, compilada en Linux con Theos y el SDK de iOS 9.3, firmada con ldid y empaquetada como `.deb`.
 
 ## Qué vas a necesitar
@@ -42,7 +42,7 @@ Cuando haya una versión:
 - Un iPad mini 1 con iOS 9.3.5 y jailbreak, para instalar el `.deb`.
 - Una PS5 con Remote Play activado, en la misma red que el iPad.
 - El Account ID de tu cuenta de PSN y el PIN de vinculación de la PS5. Se escriben en la app y nunca se guardan en el repo.
-- Un DualSense y, para el puente, un ESP32 clásico o una Pico W, salvo que la conexión directa funcione. Los ESP32-S3 y C3 no sirven: no tienen Bluetooth clásico.
+- Un DualSense. Solo si la conexión directa no funciona, un ESP32 clásico para el puente. Los ESP32-S3 y C3 no sirven: no tienen Bluetooth clásico.
 
 ## El plan
 
