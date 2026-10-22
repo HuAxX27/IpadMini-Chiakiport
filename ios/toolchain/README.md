@@ -21,6 +21,7 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `core-check.sh`, `core-check/` | Compila el core completo para el iPad y lo enlaza en un ejecutable firmado |
 | `ci-ipad.sh` | Lo que el CI compila para el iPad en cada PR: contratos, core y paquetes `.deb` |
 | `apt-linux-tests.sh` | Instala en Ubuntu 24.04 lo que piden las pruebas en Linux, también para armhf |
+| `deploy.ps1`, `deploy.sh` | Instalan `.deb` en el iPad por SSH, desde Windows o desde Linux |
 
 ## Con Docker (recomendado)
 
@@ -109,22 +110,49 @@ docker run --rm -v "$PWD":/work -w /work/ios/toolchain/hello ck-ios-toolchain ma
 # deja ios/toolchain/hello/packages/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb
 ```
 
-El CI (`ios-toolchain.yml`) también la compila y guarda el `.deb` como artefacto `ckhola-deb`.
+El CI la compila en cada PR y deja el `.deb` en el artefacto `ipad-debs` (`ios-ci.yml`); `ios-toolchain.yml` también lo guarda como `ckhola-deb` cuando cambia esta carpeta.
 
-Para instalarla en el iPad, con jailbreak y OpenSSH (desde PowerShell en Windows o una terminal en Linux, en la carpeta del `.deb`):
+Para instalarla en el iPad, sigue [Instalar en el iPad](#instalar-en-el-ipad).
 
-1. Si el iPad se reinició, vuelve a correr Carbon en Safari y revisa que Cydia abra.
+Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP /Applications/CKHola.app/CKHola` y guarda lo que imprima; `Killed: 9` apunta a la firma. Para quitarla: `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "cd /tmp && dpkg -r com.thehuax.ckhola && su mobile -c uicache"`.
+
+## Instalar en el iPad
+
+`deploy.ps1` (Windows) y `deploy.sh` (Linux, también dentro de la imagen de Docker) instalan uno o varios `.deb` en el iPad por SSH: los copian, los instalan con `dpkg -i` y actualizan la pantalla de inicio con `uicache`. Antes:
+
+1. Si el iPad se reinició, vuelve a correr Carbon en Safari y revisa que Cydia abra. Sin jailbreak activo no hay SSH.
 2. Busca la IP del iPad en Ajustes → Wi-Fi → (i) junto a tu red.
-3. Copia e instala, cambiando `IP` por la del iPad:
 
-   ```sh
-   scp -o HostKeyAlgorithms=+ssh-rsa com.thehuax.ckhola_0.1.0_iphoneos-arm.deb root@IP:/tmp/
-   ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "dpkg -i /tmp/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb && su mobile -c uicache"
-   ```
+Desde PowerShell en Windows, en la carpeta con los `.deb` (por ejemplo, el `ipad-debs` de un PR, ya descomprimido), con la ruta de tu copia del repo:
 
-4. Abre CK Hola desde la pantalla de inicio.
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\ruta\al\repo\ios\toolchain\deploy.ps1 -Ip 192.168.0.123
+```
 
-Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP /Applications/CKHola.app/CKHola` y guarda lo que imprima; `Killed: 9` apunta a la firma. Para quitarla: `dpkg -r com.thehuax.ckhola && su mobile -c uicache`.
+Pide la contraseña de root dos veces, una para copiar y otra para instalar. Con `-SetupKey` crea una llave SSH en la PC si no hay (presiona Enter dos veces cuando pida la frase) y la agrega al iPad, y desde la siguiente vez ya no pide contraseña. `-Path` elige otros `.deb` o carpetas, y `-Port` y `-User` cambian el puerto y el usuario.
+
+Desde Linux, en la raíz del repo:
+
+```sh
+ios/toolchain/deploy.sh 192.168.0.123                     # los .deb de build-ios-ci/debs (ci-ipad.sh)
+ios/toolchain/deploy.sh 192.168.0.123 ~/Descargas/ipad-debs
+```
+
+Con la imagen: `docker run --rm -it --network host -v "$PWD":/work ck-ios-toolchain ios/toolchain/deploy.sh 192.168.0.123`.
+
+Pide la contraseña una sola vez, porque todos los pasos van por la misma conexión, y no necesita `scp` ni `sftp` en el iPad. Para no escribirla, `ssh-copy-id -o HostKeyAlgorithms=+ssh-rsa root@192.168.0.123`. `CK_IPAD_PORT`, `CK_IPAD_USER` y `CK_SSH_OPTS` cambian el puerto, el usuario y las opciones de ssh.
+
+A mano, lo mismo es:
+
+```sh
+scp -o HostKeyAlgorithms=+ssh-rsa paquete.deb root@IP:/tmp/
+ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "cd /tmp && dpkg -i /tmp/paquete.deb && su mobile -c uicache"
+```
+
+Detalles del iPad que los scripts ya resuelven:
+
+- El OpenSSH de Cydia solo ofrece una llave de host `ssh-rsa`, que los clientes nuevos apagan: de ahí `-o HostKeyAlgorithms=+ssh-rsa`.
+- `uicache` corre como `mobile` y desde `/tmp`. Desde `/var/root`, la carpeta de root, `mobile` no puede leer dónde está parado y la shell avisa `getcwd: cannot access parent directories`.
 
 ## Actualizar una versión
 
