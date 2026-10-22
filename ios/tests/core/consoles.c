@@ -15,9 +15,13 @@
 #include <chiaki/thread.h>
 #include <chiaki/time.h>
 
+#include <errno.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #define HOST "127.0.0.1"
 
@@ -53,6 +57,31 @@ static CKRegistRequest request_for(const FakePs5 *ps5)
 	memcpy(request.psn_account_id, ps5->psn_account_id, sizeof(request.psn_account_id));
 	request.pin = ps5->pin;
 	return request;
+}
+
+// ---------------------------------------------------------------------------
+// iOS's socket rule (xnu_sockaddr.c)
+// ---------------------------------------------------------------------------
+
+static MunitResult test_ios_socket_lengths(const MunitParameter params[], void *user)
+{
+	(void)params;
+	(void)user;
+	// The rule has to be in force, or every test below would accept a length
+	// the iPad refuses: an IPv4 address with the length of an IPv6 one.
+	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	munit_assert_int(fd, >=, 0);
+	struct sockaddr_in6 storage;
+	memset(&storage, 0, sizeof(storage));
+	struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
+	addr->sin_family = AF_INET;
+	addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	errno = 0;
+	munit_assert_int(bind(fd, (struct sockaddr *)&storage, sizeof(storage)), ==, -1);
+	munit_assert_int(errno, ==, EINVAL);
+	munit_assert_int(bind(fd, (struct sockaddr *)addr, sizeof(*addr)), ==, 0);
+	close(fd);
+	return MUNIT_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +762,7 @@ static MunitResult test_ckctl_usage(const MunitParameter params[], void *user)
 #define FAKE_TEST(name, fn) { name, fn, setup_fake, teardown_fake, MUNIT_TEST_OPTION_NONE, NULL }
 
 static MunitTest tests[] = {
+	TEST("/ios_socket_lengths", test_ios_socket_lengths),
 	TEST("/parse_account_id", test_parse_account_id),
 	TEST("/parse_pin", test_parse_pin),
 	TEST("/regist_key_credential", test_regist_key_credential),
