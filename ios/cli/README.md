@@ -69,6 +69,8 @@ Usa el registro guardado como `ckctl wakeup`: sin `-c`, la única consola regist
 
 Imprime cada cambio de estado (`conectando`, `transmitiendo`, `detenida`), la razón con la que terminó cada sesión, las métricas de cada segundo (cuadros, kbps, cuadros perdidos, memoria) y la memoria residente después de cerrar cada ronda. Si la memoria crece ronda tras ronda, hay una fuga. Termina con 0 si todas las rondas llegaron a transmitir. `CK_LOG_VERBOSE=1 cksession ...` muestra todo lo que dice el core.
 
+Después de cerrar una sesión, la PS5 tarda unos segundos en soltarla: mientras tanto contesta que Remote Play ya está en uso (`0x80108b10`). En la primera prueba en el iPad tardó entre 6 y 9 s. Por eso, si una ronda recibe esa respuesta, `cksession` vuelve a pedir la sesión cada 2 s, hasta 10 veces, y dice cuántos segundos después de cerrar la anterior la aceptó.
+
 Después de cada ronda dice qué video mandó la consola, leído del encabezado (SPS) que llega antes de los cuadros: el códec, el perfil, el nivel y el tamaño, por ejemplo `video: H.264 High, nivel 3.1, 960x540`. Si el tamaño no es el que pidió lo dice, y si el A5 no lo puede decodificar (H.265, 10 bits, entrelazado, más de 1080p o más del nivel 4.1) también. La salida es 0 solo si todas las rondas transmitieron H.264 que el A5 decodifica.
 
 Por ahora no muestra el video ni toca el audio: los cuenta. La pantalla y el sonido llegan con la app (A3, A4 y A6).

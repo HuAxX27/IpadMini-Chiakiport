@@ -43,6 +43,7 @@ static const char *const state_names[] = { "inactiva", "conectando", "transmitie
 @property (nonatomic) CKSessionState lastState;
 @property (nonatomic) BOOL streamed;
 @property (nonatomic) BOOL quit;
+@property (nonatomic) ChiakiQuitReason quitReason;
 @end
 
 @implementation CKSessionRunner
@@ -61,6 +62,7 @@ static const char *const state_names[] = { "inactiva", "conectando", "transmitie
 {
 	(void)session;
 	self.quit = YES;
+	self.quitReason = reason;
 	printf("  terminó: %s%s%s\n", chiaki_quit_reason_string(reason), message ? ": " : "", message ? message.UTF8String : "");
 	fflush(stdout);
 }
@@ -155,6 +157,10 @@ static void run_until(NSTimeInterval seconds, BOOL (^done)(void))
 		}
 	}
 }
+
+/** Right after a session closes, the PS5 answers "in use" for several seconds. */
+#define BUSY_RETRY_SECONDS 2
+#define BUSY_RETRIES 10
 
 static int usage_error(const char *what)
 {
@@ -292,6 +298,7 @@ int main(int argc, char **argv)
 
 		long streamed = 0;
 		long h264 = 0;
+		NSDate *last_close = nil;
 		for(long round = 1; round <= rounds; round++)
 		{
 			// The console needs a moment to let go of the last session.
@@ -300,12 +307,6 @@ int main(int argc, char **argv)
 			printf("Ronda %ld de %ld\n", round, rounds);
 			@autoreleasepool
 			{
-				CKSessionRunner *runner = [CKSessionRunner new];
-				CKSession *session = [[CKSession alloc] initWithHost:@(host) registeredHost:&entry->host settings:settings];
-				session.delegate = runner;
-				pthread_mutex_lock(&video_watch.mutex);
-				video_watch.seen = false;
-				pthread_mutex_unlock(&video_watch.mutex);
 				char record_path[1001];
 				if(record)
 				{
@@ -319,26 +320,64 @@ int main(int argc, char **argv)
 						fprintf(stderr, "cksession: no puedo grabar en %s\n", record_path);
 						return 1;
 					}
-					ChiakiAudioSink sink;
-					ck_recorder_get_audio_sink(video_watch.recorder, &sink);
-					[session setAudioSink:sink];
 				}
-				[session setVideoSampleCallback:watch_video user:&video_watch];
-				NSError *error = nil;
-				if(![session start:&error])
+				CKSessionRunner *runner = nil;
+				CKSession *session = nil;
+				// While the console still holds the last session it refuses the
+				// request as in use: ask again every 2 s, up to 10 times.
+				int busy = 0;
+				NSDate *attempt = nil;
+				for(;;)
 				{
-					printf("  no arrancó: %s\n", error.localizedDescription.UTF8String);
+					attempt = [NSDate date];
+					runner = [CKSessionRunner new];
+					session = [[CKSession alloc] initWithHost:@(host) registeredHost:&entry->host settings:settings];
+					session.delegate = runner;
+					pthread_mutex_lock(&video_watch.mutex);
+					video_watch.seen = false;
+					pthread_mutex_unlock(&video_watch.mutex);
+					if(video_watch.recorder)
+					{
+						ChiakiAudioSink sink;
+						ck_recorder_get_audio_sink(video_watch.recorder, &sink);
+						[session setAudioSink:sink];
+					}
+					[session setVideoSampleCallback:watch_video user:&video_watch];
+					NSError *error = nil;
+					if(![session start:&error])
+					{
+						printf("  no arrancó: %s\n", error.localizedDescription.UTF8String);
+						session = nil;
+						break;
+					}
+					// Connecting takes a few seconds.
+					run_until(30, ^BOOL { return runner.streamed || runner.quit; });
+					if(runner.streamed || !runner.quit || runner.quitReason != CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE
+						|| busy == BUSY_RETRIES)
+						break;
+					[session stop];
+					run_until(5, ^BOOL { return runner.lastState == CKSessionStateStopped; });
+					busy++;
+					printf("  la consola sigue ocupada con la sesión anterior; otro intento en %d s\n", BUSY_RETRY_SECONDS);
+					fflush(stdout);
+					run_until(BUSY_RETRY_SECONDS, ^BOOL { return NO; });
+				}
+				if(!session)
+				{
 					ck_recorder_close(video_watch.recorder, NULL);
 					video_watch.recorder = NULL;
 					continue;
 				}
-				// Connecting takes a few seconds; then the stream runs for -t.
-				run_until(30, ^BOOL { return runner.streamed || runner.quit; });
+				if(busy && runner.streamed && last_close)
+					printf("  la consola aceptó la sesión %.0f s después de cerrar la anterior\n",
+						[attempt timeIntervalSinceDate:last_close]);
+				// Then the stream runs for -t.
 				if(runner.streamed && !runner.quit)
 					run_until(seconds, ^BOOL { return runner.quit; });
 				[session stop];
 				// The quit and the last state come through the run loop.
 				run_until(5, ^BOOL { return runner.lastState == CKSessionStateStopped && runner.quit; });
+				last_close = [NSDate date];
 				if(runner.streamed)
 				{
 					streamed++;
