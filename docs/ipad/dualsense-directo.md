@@ -78,7 +78,7 @@ Lo que falta saber, y cómo se prueba:
 | ¿Cómo rechaza hoy iOS al DualSense? | No lo muestra en la lista (T2) |
 | ¿`BTServer` habla con el chip por el socket `com.apple.uart.bluetooth`, con `read` y `write`? | Sí (T5) |
 | ¿Empareja el DualSense con el filtro? | Sí, al primer intento, y se reconecta solo (T6) |
-| ¿`BTServer` publica el pad como `IOHIDDevice`? | No (T7). T8 busca en el IORegistry si lo publica de otra forma, y `grep` en el syslog muestra por qué no |
+| ¿`BTServer` publica el pad como `IOHIDDevice`? | No (T7). T8 busca en el IORegistry si lo publica de otra forma |
 | ¿Llegan los reportes del pad a `BTServer`? ¿`BTServer` le manda algo, como un `GET_REPORT`? | Registro de `ckbtfilter` 0.1.1 (T8) |
 | ¿Se pueden leer los reportes desde el archivo compartido? | `ckhidprobe -s` (T8) |
 | ¿La app puede abrir el `IOHIDDevice`? Instalada en `/Applications` no tiene sandbox; si no basta, un demonio pequeño como root | A5.8 |
@@ -197,11 +197,10 @@ Si `scp` falla con "subsystem request failed", agrega `-O` después de `scp`. Ya
 ```sh
 dpkg -i /tmp/com.thehuax.ckdirect_0.1.1_iphoneos-arm.deb
 killall BTServer
-sleep 3
 cat /tmp/ckbtfilter.log
 ```
 
-`launchd` vuelve a abrir `BTServer` solo, ya con el filtro. Qué reportar: la salida de `dpkg` y del `cat`. Lo bueno es ver `ckbtfilter loaded into pid ...` y una línea `connect fd ... (com.apple.uart.bluetooth)`. Si el archivo no existe, el filtro anota en el syslog: instala "syslogd to /var/log/syslog" desde Cydia y corre `grep ckbtfilter /var/log/syslog`.
+`launchd` vuelve a abrir `BTServer` solo, ya con el filtro; si el `cat` sale vacío, espera unos segundos y repítelo. El iPad de prueba no trae `tail` ni `sleep`, por eso los pasos no los usan. Qué reportar: la salida de `dpkg` y del `cat`. Lo bueno es ver `ckbtfilter loaded into pid ...` y una línea `connect fd ... (com.apple.uart.bluetooth)`. Si el archivo no existe, el filtro anota en el syslog: instala "syslogd to /var/log/syslog" desde Cydia y corre `grep ckbtfilter /var/log/syslog`. En el iPad de prueba ese paquete no dejó `/var/log/syslog`, pero el archivo de registro sí se crea.
 
 **T6. Emparejar con el filtro.** En Ajustes > Bluetooth, pon el DualSense en modo de emparejar (Create y PS hasta que la luz azul parpadee rápido). Reporta si aparece, con qué nombre, y qué pasa al tocarlo. Si falla, inténtalo dos o tres veces. Luego, por SSH, pega `cat /tmp/ckbtfilter.log` completo. Si se conecta, abre Notas, toca para escribir y di si sale el teclado en pantalla.
 
@@ -225,7 +224,7 @@ ckhidprobe -s
 - `ckhidprobe -r` lista los servicios HID y Bluetooth del IORegistry de iOS, para ver si el pad está publicado de alguna otra forma, y luego sigue como `ckhidprobe`. Termina con Ctrl-C.
 - `ckhidprobe -s` lee el archivo que comparte el filtro. Presiona cada botón, mueve los sticks y aprieta los gatillos, y termina con Ctrl-C.
 
-Qué reportar: las tres salidas. Si tienes "syslogd to /var/log/syslog" instalado, también `grep -i -E "hid|btserver" /var/log/syslog | tail -80`, después de reconectar el pad.
+Qué reportar: las tres salidas.
 
 **Para quitarlo.** `dpkg -r com.thehuax.ckdirect` y luego `killall BTServer`. Reiniciar el iPad sin volver a correr Carbon también lo apaga, porque Substrate no carga nada. Para olvidar el control: Ajustes > Bluetooth, la (i) junto al DualSense, "Omitir este dispositivo".
 
