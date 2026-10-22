@@ -1,4 +1,4 @@
-# ckctl y cksession (A2.4 a A2.7)
+# ckctl y cksession (A2.4 a A2.8)
 
 Herramientas de línea de comandos para el iPad, por SSH. `ckctl` busca, registra y despierta la PS5: es la prueba del hito espolón (P2), que la PS5 se encienda desde el iPad. `cksession` abre y cierra sesiones de streaming con ella a través de `CKSession`, la clase que usará la app. Dueño: A2.
 
@@ -62,6 +62,7 @@ El core solo dice si el registro funcionó o no. `ck_regist` lee la línea de er
 cksession                       # una sesión de 10 s con la consola registrada
 cksession -n 20 -t 5            # abre y cierra 20 veces, 5 s cada una
 cksession -c Sala -r 720 -f 60  # otra consola, 720p a 60 cuadros por segundo
+cksession -t 60 -g /var/mobile/captura   # un minuto, grabado en captura.h264 y captura.opus
 ```
 
 Usa el registro guardado como `ckctl wakeup`: sin `-c`, la única consola registrada, en la última IP que guardó `ckctl` (o en `-H`). La consola tiene que estar encendida: `ckctl wakeup -w 60` primero. Pide H.264 a 540p y 30 cuadros por segundo salvo que `-r`, `-f` o `-b` digan otra cosa.
@@ -71,6 +72,15 @@ Imprime cada cambio de estado (`conectando`, `transmitiendo`, `detenida`), la ra
 Después de cada ronda dice qué video mandó la consola, leído del encabezado (SPS) que llega antes de los cuadros: el códec, el perfil, el nivel y el tamaño, por ejemplo `video: H.264 High, nivel 3.1, 960x540`. Si el tamaño no es el que pidió lo dice, y si el A5 no lo puede decodificar (H.265, 10 bits, entrelazado, más de 1080p o más del nivel 4.1) también. La salida es 0 solo si todas las rondas transmitieron H.264 que el A5 decodifica.
 
 Por ahora no muestra el video ni toca el audio: los cuenta. La pantalla y el sonido llegan con la app (A3, A4 y A6).
+
+### Grabar una sesión (A2.8)
+
+Con `-g RUTA`, `cksession` graba lo que llega de la consola en dos archivos, para probar el video y el audio sin consola (con `-n`, cada ronda en `RUTA-1`, `RUTA-2`...):
+
+- `RUTA.h264`: el video en Annex B crudo, tal como lo entrega el core, con el encabezado del perfil primero y luego cada cuadro. Es lo que leen `ios/tests/ck_h264_tests.sh` y `ffplay`.
+- `RUTA.opus`: el audio en Ogg Opus, que guarda dónde termina cada paquete y se escucha con `ffplay` o VLC. Un cuadro de audio que se perdió en la red queda como un paquete vacío que le dice al decodificador que lo disimule, así que la duración no cambia.
+
+Al cerrar cada ronda dice cuántos cuadros y cuántos segundos de audio grabó. A 540p son unos 45 MB por minuto. Grabar escribe a disco en el hilo del video, con un búfer de 256 KB; sirve para pruebas, no para jugar.
 
 ## Compilar
 
@@ -101,6 +111,15 @@ Reporta lo que imprimió cada paso (sin el Account ID ni el PIN) y, si algo fall
 
 Reporta la salida de los dos comandos. Si una ronda no llega a `transmitiendo`, repite con `CK_LOG_VERBOSE=1 cksession -t 10` y guarda la salida.
 
+## Grabar un minuto en el iPad (A2.8)
+
+1. Con la PS5 encendida, en un juego o en el menú: `cksession -t 60 -g /var/mobile/captura`. Al final debe decir `grabé ... cuadros` y `60.0 s de audio` (más o menos).
+2. Desde la computadora, cópialos: `scp ipad:/var/mobile/captura.h264 ipad:/var/mobile/captura.opus .`
+3. Revisa que se vean y se oigan: `ffplay captura.h264` y `ffplay captura.opus`.
+4. Deja los dos archivos en la carpeta del proyecto (no en el repo: pesan) y bórralos del iPad con `rm /var/mobile/captura.*`.
+
+Reporta las dos líneas de `grabé` y si el video y el audio se ven y se oyen bien.
+
 ## Pruebas
 
 ```sh
@@ -112,5 +131,7 @@ Reporta la salida de los dos comandos. Si una ronda no llega a `transmitiendo`, 
 `ck_session` (`ios/tests/core/session.c`) prueba `ios/Bridge/ck_session.c`, la mitad en C de `CKSession`, contra la misma PS5 falsa, que contesta la petición de sesión como una PS5 (la acepta, dice que Remote Play está en uso, no contesta o cuelga) pero no transmite. Cubre cada forma de terminar, detener mientras conecta, volver a arrancar la misma sesión, el hilo de entrada que lee los controles a 125 Hz, y abrir y cerrar 20 veces sin que crezcan los sockets, los hilos ni la memoria. Con ASan y `--no-fork`, LeakSanitizer revisa además que no quede memoria sin liberar.
 
 `ck_video_info` (`ios/tests/core/video_info.c`) prueba `ios/Bridge/ck_video_info.c`, que lee el encabezado de video, con encabezados de x264 (540p, 720p, 360p, 1080p, entrelazado, 10 bits, 4:2:2 y 4:4:4), uno de x265 y otros escritos a mano para lo que x264 no hace (listas de escalado, `pic_order_cnt_type` 1, bytes de prevención de emulación) o está roto. `ck_session` revisa además que el launch spec que el core le manda a la PS5 pida `avc` con el tamaño y los cuadros por segundo de los ajustes.
+
+`ck_recorder` (`ios/tests/core/recorder.c`) prueba `ios/Bridge/ck_recorder.c` con paquetes Opus de libopus como los de la PS5: lee de vuelta cada página Ogg con un CRC propio, decodifica cada paquete con libopus y revisa la duración de cada página, incluidos los cuadros perdidos, paquetes de más de 255 bytes, paquetes de dos cuadros, encabezados que cambian, archivos que no se pueden abrir y un disco lleno. `ck_recorder_ffmpeg` (`check_recording.py`) graba 3 s y revisa con ffmpeg que el `.opus` se decodifique sin errores a exactamente esas muestras y que el `.h264` tenga los mismos cuadros que la muestra de x264.
 
 `ck_registry` (`ios/tests/core/registry.c`) prueba el plist en disco: ida y vuelta, carpetas que no existen, permisos `0600`, un plist como los que escribe Foundation (con llaves de la app, comentarios y datos en varias líneas) y 25 archivos dañados que debe rechazar. `ck_registry_plistlib` (`check_registry_plist.py`) cruza el formato con `plistlib` de Python: lee lo que escribe `ck_registry`, le da a `ck_registry` lo que escribe `plistlib` y revisa que rechace un plist binario.

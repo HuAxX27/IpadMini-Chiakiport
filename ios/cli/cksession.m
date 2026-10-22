@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// cksession (A2.6, A2.7): opens a streaming session with a registered console
-// through CKSession, the class the app uses (contract C1), and closes it, as
-// many times as asked, to try the session on the iPad without the app. Prints
-// every change of state, the metrics once per second, the video the console
-// sent and the resident memory after each round. See README.md.
+// cksession (A2.6 to A2.8): opens a streaming session with a registered
+// console through CKSession, the class the app uses (contract C1), and closes
+// it, as many times as asked, to try the session on the iPad without the app.
+// Prints every change of state, the metrics once per second, the video the
+// console sent and the resident memory after each round, and with -g records
+// the session to files for testing without a console. See README.md.
 
 #import "Bridge/CKSession.h"
 
+#include "Bridge/ck_recorder.h"
 #include "Bridge/ck_registry.h"
 #include "Bridge/ck_session.h"
 #include "Bridge/ck_video_info.h"
@@ -21,7 +23,7 @@
 
 static const char usage[] =
 	"Uso: cksession [-c CONSOLA] [-H IP] [-s RUTA] [-n VECES] [-t SEGUNDOS]\n"
-	"                [-r 360|540|720] [-f 30|60] [-b KBPS]\n"
+	"                [-r 360|540|720] [-f 30|60] [-b KBPS] [-g RUTA]\n"
 	"  Abre una sesión con la consola registrada (ckctl regist), la deja\n"
 	"  transmitir SEGUNDOS (10) y la cierra, VECES veces (1). La consola debe\n"
 	"  estar encendida: ckctl wakeup -w 60 la despierta.\n"
@@ -30,6 +32,8 @@ static const char usage[] =
 	"  -H IP        su IP, si no es la última que guardó ckctl\n"
 	"  -s RUTA      el archivo de registros (" CK_REGISTRY_DEFAULT_PATH ")\n"
 	"  -r, -f, -b   resolución, cuadros por segundo y bitrate (540p, 30, el del core)\n"
+	"  -g RUTA      graba el video en RUTA.h264 y el audio en RUTA.opus; con -n,\n"
+	"               cada ronda en RUTA-1, RUTA-2...\n"
 	"\n"
 	"  CK_LOG_VERBOSE=1 cksession ...   muestra todo lo que dice el core\n";
 
@@ -72,22 +76,26 @@ static const char *const state_names[] = { "inactiva", "conectando", "transmitie
 
 @end
 
-/** The video header of the round, written by the core's video thread. */
+/** The video header of the round, written by the core's video thread, and the round's recorder. */
 typedef struct video_watch_t
 {
 	pthread_mutex_t mutex;
 	bool seen;
 	CKVideoInfo info;
+	/** Set before the session starts and closed after it stopped, so the video thread can use it. */
+	CKRecorder *recorder;
 } VideoWatch;
 
-static VideoWatch video_watch = { PTHREAD_MUTEX_INITIALIZER, false, { 0 } };
+static VideoWatch video_watch = { PTHREAD_MUTEX_INITIALIZER, false, { 0 }, NULL };
 
-/** The session's video callback (contract C2): keeps the header, takes every frame. */
+/** The session's video callback (contract C2): keeps the header, records, takes every frame. */
 static bool watch_video(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	(void)frames_lost;
 	(void)frame_recovered;
 	VideoWatch *watch = user;
+	if(watch->recorder)
+		ck_recorder_video(watch->recorder, buf, buf_size);
 	CKVideoInfo info;
 	if(ck_video_info_parse(buf, buf_size, &info))
 	{
@@ -123,6 +131,15 @@ static bool report_video(const ChiakiConnectVideoProfile *asked)
 		printf(" (pedí %ux%u)", asked->width, asked->height);
 	printf("%s\n", decodes ? "" : "; el A5 no lo decodifica");
 	return decodes;
+}
+
+/** Prints what -g recorded in a round. */
+static void report_recording(const char *path, const CKRecorderStats *stats)
+{
+	printf("  grabé %u cuadros (%llu KB) en %s.h264%s\n", stats->video_buffers,
+		(unsigned long long)(stats->video_bytes / 1024), path, stats->video_error ? ", hasta que falló la escritura" : "");
+	printf("  y %.1f s de audio (%u paquetes, %u perdidos en la red) en %s.opus%s\n", stats->audio_samples / 48000.0,
+		stats->audio_packets, stats->audio_lost, path, stats->audio_error ? ", hasta que falló la escritura" : "");
 }
 
 /** Runs the main run loop, where CKSession delivers, until done() or seconds pass. */
@@ -162,6 +179,7 @@ int main(int argc, char **argv)
 		const char *console = NULL;
 		const char *host = NULL;
 		const char *store = CK_REGISTRY_DEFAULT_PATH;
+		const char *record = NULL;
 		long rounds = 1;
 		long seconds = 10;
 		CKSettings settings;
@@ -185,6 +203,8 @@ int main(int argc, char **argv)
 				host = value;
 			else if(!strcmp(arg, "-s"))
 				store = value;
+			else if(!strcmp(arg, "-g"))
+				record = value;
 			else if(!strcmp(arg, "-n"))
 			{
 				if(!parse_number(value, 1, 1000, &rounds))
@@ -224,6 +244,9 @@ int main(int argc, char **argv)
 			else
 				return usage_error("opción desconocida");
 		}
+
+		ChiakiLog record_log;
+		chiaki_log_init(&record_log, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING, chiaki_log_cb_print, NULL);
 
 		ChiakiErrorCode err = chiaki_lib_init();
 		if(err != CHIAKI_ERR_SUCCESS)
@@ -283,11 +306,30 @@ int main(int argc, char **argv)
 				pthread_mutex_lock(&video_watch.mutex);
 				video_watch.seen = false;
 				pthread_mutex_unlock(&video_watch.mutex);
+				char record_path[1001];
+				if(record)
+				{
+					if(rounds > 1)
+						snprintf(record_path, sizeof(record_path), "%s-%ld", record, round);
+					else
+						snprintf(record_path, sizeof(record_path), "%s", record);
+					video_watch.recorder = ck_recorder_open(record_path, &record_log);
+					if(!video_watch.recorder)
+					{
+						fprintf(stderr, "cksession: no puedo grabar en %s\n", record_path);
+						return 1;
+					}
+					ChiakiAudioSink sink;
+					ck_recorder_get_audio_sink(video_watch.recorder, &sink);
+					[session setAudioSink:sink];
+				}
 				[session setVideoSampleCallback:watch_video user:&video_watch];
 				NSError *error = nil;
 				if(![session start:&error])
 				{
 					printf("  no arrancó: %s\n", error.localizedDescription.UTF8String);
+					ck_recorder_close(video_watch.recorder, NULL);
+					video_watch.recorder = NULL;
 					continue;
 				}
 				// Connecting takes a few seconds; then the stream runs for -t.
@@ -302,6 +344,14 @@ int main(int argc, char **argv)
 					streamed++;
 					if(report_video(&profile))
 						h264++;
+				}
+				// The session's threads are joined: nothing writes to the recorder any more.
+				if(video_watch.recorder)
+				{
+					CKRecorderStats stats;
+					ck_recorder_close(video_watch.recorder, &stats);
+					video_watch.recorder = NULL;
+					report_recording(record_path, &stats);
 				}
 			}
 			printf("  memoria después de cerrar: %u KB\n", ck_resident_kb());
