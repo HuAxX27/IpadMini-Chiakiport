@@ -10,7 +10,7 @@
 #     libraries, headers and licenses).
 #   - linux-tests: the port's portable C tests on Linux, on x86_64 and as
 #     32-bit ARM under qemu-arm: the contracts, the core (ios/tests/core),
-#     H.264 (A3) and the DualSense parser (A5.7).
+#     H.264 (A3) and input (A5: the DualSense parser and the BTServer filter).
 #
 # The toolchain itself (Docker image, install script) is checked by
 # ios-toolchain.yml when it changes. The iOS SDK is downloaded at build time
@@ -82,11 +82,10 @@ jobs:
       - name: Contracts
         run: cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c
 
-      - name: DualSense report parser (A5.7)
-        run: |
-          cc -std=c11 -Wall -Wextra -Ilib/include -Iios/Input -o "$RUNNER_TEMP/ds5_test" \
-            ios/tests/ds5_test.c ios/Input/ck_ds5.c lib/src/controller.c
-          "$RUNNER_TEMP/ds5_test"
+      # THEOS is not set here, so the script skips its Theos step: the iPad
+      # job packages ckdirect with the rest of ios/.
+      - name: Input, DualSense parser and BTServer filter (A5)
+        run: ios/tests/input_tests.sh
 
       - name: H.264 Annex B to AVCC (A3)
         run: ios/tests/ck_h264_tests.sh

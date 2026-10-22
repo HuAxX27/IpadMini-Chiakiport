@@ -169,7 +169,7 @@ Cambia la URL o el commit en `versions.env` junto con su sha256 (`sha256sum arch
   4. empaqueta como `.deb` cada proyecto de Theos que haya bajo `ios/`, es decir, cada carpeta con un `Makefile` y un archivo `control`. Hoy es solo CK Hola; la app y `ckctl` entran solos cuando tengan su `control`.
 
   Deja dos artefactos: **`ipad-debs`**, los `.deb` para instalar en el iPad, e **`ios-libs-armv7`**, las librerías estáticas para armv7 (core, nanopb, jerasure, gf-complete, mbedTLS y Opus) con los headers de mbedTLS y Opus y las licencias.
-- **`Linux tests`** instala lo necesario con `apt-linux-tests.sh` y corre, cada una en su paso, las pruebas en C del port: los contratos, el parser del DualSense (A5.7), H.264 (A3, también en armv7 bajo `qemu-arm`) y el core (A2: OpenSSL, mbedTLS y mbedTLS en armv7 bajo `qemu-arm`, más las pruebas heredadas de VitaRPS5).
+- **`Linux tests`** instala lo necesario con `apt-linux-tests.sh` y corre, cada una en su paso, las pruebas en C del port: los contratos, la entrada (A5: el parser del DualSense y el filtro de BTServer, con `ios/tests/input_tests.sh`, también en armv7 bajo `qemu-arm`), H.264 (A3, también en armv7 bajo `qemu-arm`) y el core (A2: OpenSSL, mbedTLS y mbedTLS en armv7 bajo `qemu-arm`, más las pruebas heredadas de VitaRPS5).
 
 Lo mismo corre en un Linux sin CI: `THEOS=... ios/toolchain/ci-ipad.sh` deja todo en `build-ios-ci/`, y `sudo ios/toolchain/apt-linux-tests.sh` prepara un Ubuntu 24.04 para las pruebas.
 
