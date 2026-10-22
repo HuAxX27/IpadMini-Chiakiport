@@ -98,10 +98,11 @@ add_test(NAME ck_registry_plistlib
 
 # A2.6: the C half of CKSession (Bridge/ck_session.h) against the same fake PS5, which answers the
 # session request but has no stream. It binds the PS5's ports, so it runs on its own as well.
-add_executable(ck-session-tests session.c "${CK_IOS_DIR}/tests/fakes/fake_ps5.c")
+add_executable(ck-session-tests session.c "${CK_IOS_DIR}/tests/fakes/fake_ps5.c" xnu_sockaddr.c)
 target_include_directories(ck-session-tests PRIVATE "${CK_IOS_DIR}/tests/fakes")
 target_compile_options(ck-session-tests PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ck-session-tests ck-consoles munit Threads::Threads)
+target_link_options(ck-session-tests PRIVATE ${CK_XNU_SOCKADDR_WRAP})
 if(CMAKE_CROSSCOMPILING_EMULATOR)
     target_compile_definitions(ck-session-tests PRIVATE CK_TEST_EMULATED)
 endif()
