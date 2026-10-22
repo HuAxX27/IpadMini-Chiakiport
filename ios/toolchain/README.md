@@ -166,7 +166,7 @@ Cambia la URL o el commit en `versions.env` junto con su sha256 (`sha256sum arch
   1. compila mbedTLS y Opus (`build-deps.sh`);
   2. revisa los contratos contra el SDK 9.3 para armv7: `ios/tests/contracts_check.c` en C, para que sus `_Static_assert` valgan con la estructura de 32 bits del iPad, y `ios/Bridge/CKSession.h` como Objective-C, con las mismas definiciones que el core;
   3. compila el core (`core-check.sh`);
-  4. empaqueta como `.deb` cada proyecto de Theos que haya bajo `ios/`, es decir, cada carpeta con un `Makefile` y un archivo `control`. Hoy es solo CK Hola; la app y `ckctl` entran solos cuando tengan su `control`.
+  4. empaqueta como `.deb` cada proyecto de Theos que haya bajo `ios/`, es decir, cada carpeta con un `Makefile` y un archivo `control`. Hoy son CK Hola y `ckdirect`; la app y `ckctl` entran solos cuando tengan su `control`. Theos compila con `-Wall -Werror` y cada paquete recibe además `-Werror=unguarded-availability`, así que una API posterior a iOS 9.0 sin `@available` rompe el build aunque su `Makefile` no lo pida.
 
   Deja dos artefactos: **`ipad-debs`**, los `.deb` para instalar en el iPad, e **`ios-libs-armv7`**, las librerías estáticas para armv7 (core, nanopb, jerasure, gf-complete, mbedTLS y Opus) con los headers de mbedTLS y Opus y las licencias.
 - **`Linux tests`** instala lo necesario con `apt-linux-tests.sh` y corre, cada una en su paso, las pruebas en C del port: los contratos, la entrada (A5: el parser del DualSense y el filtro de BTServer, con `ios/tests/input_tests.sh`, también en armv7 bajo `qemu-arm`), H.264 (A3, también en armv7 bajo `qemu-arm`) y el core (A2: OpenSSL, mbedTLS y mbedTLS en armv7 bajo `qemu-arm`, más las pruebas heredadas de VitaRPS5).
@@ -176,6 +176,8 @@ Lo mismo corre en un Linux sin CI: `THEOS=... ios/toolchain/ci-ipad.sh` deja tod
 Para bajar el `.deb` de un PR: en la pestaña **Checks** del PR, abre **iOS CI**, baja hasta **Artifacts** y descarga `ipad-debs`. Llega como `.zip` con el `.deb` adentro. GitHub pide haber iniciado sesión para descargarlo.
 
 `ios-toolchain.yml` sigue revisando la imagen de Docker y el script de instalación cuando cambia esta carpeta.
+
+`ios-quality.yml` también corre en cada PR: secretos y datos de PSN con gitleaks, el nombre del dueño, análisis estático (cppcheck y `scan-build`) y lint. Los detalles y cómo correrlo antes de subir están en [`.github/quality/README.md`](../../.github/quality/README.md).
 
 ## Licencias
 

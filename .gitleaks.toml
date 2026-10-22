@@ -1,4 +1,4 @@
-# gitleaks configuration for vitarps5
+# gitleaks configuration for vitarps5 and the iPad port
 #
 # Allowlists the public, reverse-engineered PS App OAuth client credentials that
 # are intentionally committed to this repository. See docs/design/psn.md
@@ -8,21 +8,71 @@
 # endpoint and are freely available across the open-source Remote Play ecosystem
 # (Chiaki, chiaki-ng, chiaki4deck, and derivatives). Removing them would only
 # break the build.
+#
+# The [[rules]] below are the iPad port's (CLAUDE.md: "Sin datos de PSN en el
+# repo"), run by .github/quality/check.sh on every PR: the PSN Account ID, a
+# console's registration keys, the registration PIN and the Wi-Fi password of
+# the ESP32 bridge. Each one looks for a value right after its usual name, as
+# it shows up in code, TOML, plists, logs and the headers of a regist response.
+# Tests hold fake values, so test folders are allowed for those rules.
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Public PS-App OAuth client credentials (see docs/design/psn.md)"
+description = "Public PS-App OAuth client credentials (see docs/design/psn.md), and fake tokens in VitaRPS5's redaction tests"
 
 paths = [
     '''\.env\.prod$''',
     '''\.env\.testing$''',
     '''docs/design/psn\.md$''',
     '''vita/src/psn_auth\.c$''',
+    '''(^|/)test/redact_tests\.c$''',
 ]
 
 regexes = [
     '''ba495a24-818c-472b-b12d-ff231c1b5745''',
     '''mvaiZkRsAsI1IBkY''',
 ]
+
+# 8 bytes: 12 characters of base64 ending in "=", or the decimal number.
+[[rules]]
+id = "psn-account-id"
+description = "PSN Account ID"
+regex = '''(?i)\b(?:psn[_ -]?)?account[_ -]?id\b[^A-Za-z0-9+/\n]{0,12}(?:</key>\s*<(?:data|string)>\s*)?([A-Za-z0-9+/]{11}=|[0-9]{15,20})(?:[^A-Za-z0-9+/=]|$)'''
+secretGroup = 1
+keywords = ["account"]
+
+[[rules.allowlists]]
+paths = ['''(^|/)tests?/''']
+
+# rp_regist_key and rp_key of ChiakiRegisteredHost, in hex or base64, and the
+# PS5-RegistKey and RP-Key headers of the regist response.
+[[rules]]
+id = "ps-registration-key"
+description = "Console registration key (rp_regist_key, rp_key)"
+regex = '''(?i)\b(?:rp[_ -]?regist[_ -]?key|regist[_ -]?key|registkey|rp[_ -]?key)\b[^A-Za-z0-9+/\n]{0,12}(?:</key>\s*<(?:data|string)>\s*)?([0-9a-f]{16,32}|[A-Za-z0-9+/]{22}==)(?:[^A-Za-z0-9+/=]|$)'''
+secretGroup = 1
+keywords = ["regist", "rp_key", "rp-key", "rpkey", "rp key"]
+
+[[rules.allowlists]]
+paths = ['''(^|/)tests?/''']
+
+# The 8 digits the PS5 shows when registering, also written as 1234 5678.
+[[rules]]
+id = "ps-registration-pin"
+description = "Remote Play registration PIN"
+regex = '''(?i)\b(?:regist(?:ration)?[_ -]?)?pin\b[^A-Za-z0-9\n]{0,6}([0-9]{4}[ -]?[0-9]{4})\b'''
+secretGroup = 1
+keywords = ["pin"]
+
+[[rules.allowlists]]
+paths = ['''(^|/)tests?/''']
+
+# The bridge's Kconfig default and sdkconfig, or any wifi_password = "...".
+[[rules]]
+id = "wifi-password"
+description = "Wi-Fi password"
+regex = '''(?i)\b(?:CONFIG_CKBRIDGE_WIFI_PASSWORD|wi-?fi[_ -]?pass(?:word)?|wpa[_ -]?psk)\b\s*[=:]\s*"([^"\s]{8,63})"'''
+secretGroup = 1
+keywords = ["pass", "psk"]
