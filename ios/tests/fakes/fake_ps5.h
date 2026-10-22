@@ -24,7 +24,9 @@
 #include <stdint.h>
 
 #define FAKE_PS5_NAME "PS5-Falsa"
-#define FAKE_PS5_HOST_ID "0A1B2C3D4E5F"
+/** Lowercase on purpose: ck_consoles must hand it out uppercase. */
+#define FAKE_PS5_HOST_ID "0a1b2c3d4e5f"
+#define FAKE_PS5_HOST_ID_UPPER "0A1B2C3D4E5F"
 #define FAKE_PS5_SYSTEM_VERSION "09060000"
 /** The registration key as the PS5 keeps it: 8 hex digits as text. */
 #define FAKE_PS5_REGIST_KEY "1a2b3c4d"

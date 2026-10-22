@@ -163,7 +163,7 @@ static MunitResult test_discover_host(const MunitParameter params[], void *fixtu
 	const CKConsole *c = &consoles[0];
 	munit_assert_string_equal(c->addr, HOST);
 	munit_assert_string_equal(c->name, FAKE_PS5_NAME);
-	munit_assert_string_equal(c->host_id, FAKE_PS5_HOST_ID);
+	munit_assert_string_equal(c->host_id, FAKE_PS5_HOST_ID_UPPER);
 	munit_assert_string_equal(c->system_version, FAKE_PS5_SYSTEM_VERSION);
 	munit_assert_string_equal(c->running_app_name, "");
 	munit_assert_int(c->state, ==, CHIAKI_DISCOVERY_HOST_STATE_STANDBY);
@@ -327,6 +327,27 @@ static MunitResult test_regist_success(const MunitParameter params[], void *fixt
 	uint64_t credential = 0;
 	munit_assert_int(ck_regist_key_credential(host->rp_regist_key, &credential), ==, CHIAKI_ERR_SUCCESS);
 	munit_assert_uint64(credential, ==, FAKE_PS5_CREDENTIAL);
+	return MUNIT_OK;
+}
+
+/** How the app matches a discovered console with its saved registration. */
+static MunitResult test_host_id_matches_server_mac(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	CKConsole console;
+	size_t count = 0;
+	munit_assert_int(ck_consoles_discover(&test_log, HOST, 3000, &console, 1, &count), ==, CHIAKI_ERR_SUCCESS);
+	CKRegistRequest request = request_for(ps5);
+	CKRegistOutcome outcome;
+	CKRegistResult result = ck_regist_run(&test_log, &request, &outcome);
+	fake_ps5_stop(ps5);
+	munit_assert_size(count, ==, 1);
+	munit_assert_int(result, ==, CK_REGIST_SUCCESS);
+	char mac[13];
+	for(size_t i = 0; i < 6; i++)
+		snprintf(mac + 2 * i, 3, "%02X", outcome.registered_host.server_mac[i]);
+	munit_assert_string_equal(console.host_id, mac);
 	return MUNIT_OK;
 }
 
@@ -576,7 +597,7 @@ static MunitResult test_ckctl_discover(const MunitParameter params[], void *fixt
 	assert_contains(run.out, "PS5");
 	assert_contains(run.out, "en reposo");
 	assert_contains(run.out, FAKE_PS5_NAME);
-	assert_contains(run.out, "id " FAKE_PS5_HOST_ID);
+	assert_contains(run.out, "id " FAKE_PS5_HOST_ID_UPPER);
 	return MUNIT_OK;
 }
 
@@ -721,6 +742,7 @@ static MunitTest tests[] = {
 	TEST("/discover_broadcast", test_discover_broadcast),
 	FAKE_TEST("/browser", test_browser),
 	FAKE_TEST("/regist_success", test_regist_success),
+	FAKE_TEST("/host_id_matches_server_mac", test_host_id_matches_server_mac),
 	FAKE_TEST("/regist_wrong_pin", test_regist_wrong_pin),
 	FAKE_TEST("/regist_wrong_account", test_regist_wrong_account),
 	FAKE_TEST("/regist_server_error", test_regist_server_error),

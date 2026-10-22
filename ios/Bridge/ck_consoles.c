@@ -59,6 +59,10 @@ static void console_from_host(CKConsole *console, ChiakiDiscoveryHost *host)
 	copy_string(console->addr, sizeof(console->addr), host->host_addr);
 	copy_string(console->name, sizeof(console->name), host->host_name);
 	copy_string(console->host_id, sizeof(console->host_id), host->host_id);
+	// Uppercase, so it compares equal to the registry's key (C5).
+	for(char *c = console->host_id; *c; c++)
+		if(*c >= 'a' && *c <= 'f')
+			*c = (char)(*c - 'a' + 'A');
 	copy_string(console->system_version, sizeof(console->system_version), host->system_version);
 	copy_string(console->running_app_titleid, sizeof(console->running_app_titleid), host->running_app_titleid);
 	copy_string(console->running_app_name, sizeof(console->running_app_name), host->running_app_name);

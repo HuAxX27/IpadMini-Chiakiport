@@ -39,9 +39,10 @@ typedef struct ck_console_t
 	/** The name set on the console. */
 	char name[64];
 	/**
-	 * The console's MAC address as 12 hex digits. It equals the hex of
-	 * ChiakiRegisteredHost.server_mac, which is how the app matches a
-	 * discovered console with its saved registration.
+	 * The console's MAC address as 12 hex digits, uppercase whatever case the
+	 * console sent. It equals the uppercase hex of
+	 * ChiakiRegisteredHost.server_mac, the key of the saved registration (C5),
+	 * which is how the app matches a discovered console with it.
 	 */
 	char host_id[32];
 	/** Firmware as the console reports it, e.g. "09060000". */
@@ -110,6 +111,7 @@ ChiakiErrorCode ck_parse_psn_account_id(const char *text, uint8_t account_id[CHI
 /** Parses the 8-digit PIN the console shows; spaces and hyphens are ignored. */
 ChiakiErrorCode ck_parse_regist_pin(const char *text, uint32_t *pin);
 
+/** ck_regist_start() copies the request: host only has to live during the call. */
 typedef struct ck_regist_request_t
 {
 	/** The console's address. */
