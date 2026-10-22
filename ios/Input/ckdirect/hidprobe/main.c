@@ -8,12 +8,20 @@
 //
 //   ckhidprobe        # list devices, then follow the DualSense
 //   ckhidprobe -x     # also print the bytes of every report that gets a line
+//   ckhidprobe -r     # first list the HID and Bluetooth services in the IORegistry
+//   ckhidprobe -s     # read the reports ckbtfilter shares instead (see ck_ds5_shared.h)
 
+#include "ck_ds5_shared.h"
 #include "ck_iohid.h"
 #include "ds5_print.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static bool hex;
 static bool found_dualsense;
@@ -178,6 +186,130 @@ static void on_removed(void *context, IOReturn result, void *sender, IOHIDDevice
 	fflush(stdout);
 }
 
+static void entry_string(io_registry_entry_t entry, const char *key, char *out, size_t size)
+{
+	CFStringRef k = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
+	CFTypeRef value = IORegistryEntryCreateCFProperty(entry, k, kCFAllocatorDefault, 0);
+	CFRelease(k);
+	cf_string(value, out, size);
+	if(value)
+		CFRelease(value);
+}
+
+static long entry_number(io_registry_entry_t entry, const char *key)
+{
+	CFStringRef k = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
+	CFTypeRef value = IORegistryEntryCreateCFProperty(entry, k, kCFAllocatorDefault, 0);
+	CFRelease(k);
+	long n = cf_number(value);
+	if(value)
+		CFRelease(value);
+	return n;
+}
+
+// Walks the whole IORegistry and prints every service whose class mentions HID
+// or Bluetooth, or whose product looks like a controller. It shows whether
+// BTServer published the pad in some form that IOHIDManager does not match.
+static void list_registry(void)
+{
+	io_iterator_t it;
+	kern_return_t r = IORegistryCreateIterator(kIOMasterPortDefault, kIOServicePlane, kIORegistryIterateRecursively, &it);
+	if(r != KERN_SUCCESS)
+	{
+		printf("IORegistryCreateIterator failed: 0x%08x\n", (unsigned)r);
+		return;
+	}
+	unsigned seen = 0, shown = 0;
+	io_object_t entry;
+	while((entry = IOIteratorNext(it)) != 0)
+	{
+		seen++;
+		io_name_t cls = "", name = "";
+		IOObjectGetClass(entry, cls);
+		IORegistryEntryGetName(entry, name);
+		char product[128];
+		entry_string(entry, kIOHIDProductKey, product, sizeof(product));
+		bool interesting = strstr(cls, "HID") || strstr(cls, "Bluetooth") || strstr(cls, "BT")
+			|| strstr(product, "Controller") || strstr(product, "DualSense");
+		if(interesting)
+		{
+			shown++;
+			char transport[64];
+			entry_string(entry, kIOHIDTransportKey, transport, sizeof(transport));
+			printf("registry: %s \"%s\"%s", cls, name, IOObjectConformsTo(entry, "IOHIDDevice") ? " [IOHIDDevice]" : "");
+			if(product[0])
+				printf(", product \"%s\"", product);
+			if(transport[0])
+				printf(", transport \"%s\"", transport);
+			long vendor = entry_number(entry, kIOHIDVendorIDKey);
+			if(vendor >= 0)
+				printf(", %04lx:%04lx", vendor & 0xffff, entry_number(entry, kIOHIDProductIDKey) & 0xffff);
+			long page = entry_number(entry, kIOHIDPrimaryUsagePageKey);
+			if(page >= 0)
+				printf(", usage %ld:%ld", page, entry_number(entry, kIOHIDPrimaryUsageKey));
+			printf("\n");
+		}
+		IOObjectRelease(entry);
+	}
+	IOObjectRelease(it);
+	printf("registry: %u of %u services shown\n", shown, seen);
+	fflush(stdout);
+}
+
+// Follows the reports the BTServer tweak copies into CK_DS5_SHARED_PATH,
+// polling every 4 ms: the path the app takes if iOS never publishes the pad.
+static int follow_shared(void)
+{
+	int fd = open(CK_DS5_SHARED_PATH, O_RDONLY);
+	struct stat st;
+	if(fd < 0 || fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(CKDS5Shared))
+	{
+		printf("%s: %s. ckbtfilter makes it when a pad connects.\n", CK_DS5_SHARED_PATH,
+			fd < 0 ? strerror(errno) : "too short");
+		return 1;
+	}
+	void *map = mmap(NULL, sizeof(CKDS5Shared), PROT_READ, MAP_SHARED, fd, 0);
+	close(fd);
+	if(map == MAP_FAILED)
+	{
+		printf("mmap %s: %s\n", CK_DS5_SHARED_PATH, strerror(errno));
+		return 1;
+	}
+	const CKDS5Shared *shared = map;
+	if(!ck_ds5_shared_valid(shared))
+		printf("%s is not set up yet; waiting for ckbtfilter.\n", CK_DS5_SHARED_PATH);
+	printf("Following the reports ckbtfilter shares in %s. Press buttons, move the sticks; Ctrl-C to quit.\n",
+		CK_DS5_SHARED_PATH);
+	fflush(stdout);
+
+	DS5Printer printer;
+	ds5_printer_init(&printer, hex, CFAbsoluteTimeGetCurrent());
+	uint32_t seq = 0;
+	uint8_t report[CK_DS5_SHARED_REPORT_MAX];
+	size_t len;
+	int pad = -1; // unknown, no, yes
+	for(;;)
+	{
+		if(ck_ds5_shared_read(shared, &seq, report, &len))
+		{
+			if(len == 0 && pad != 0)
+			{
+				printf("no pad connected\n");
+				pad = 0;
+			}
+			else if(len > 0)
+			{
+				if(pad != 1)
+					printf("pad reports arriving\n");
+				pad = 1;
+				ds5_printer_feed(&printer, report, len, CFAbsoluteTimeGetCurrent());
+			}
+			fflush(stdout);
+		}
+		usleep(4000);
+	}
+}
+
 static void waiting_hint(CFRunLoopTimerRef timer, void *info)
 {
 	(void)timer;
@@ -191,9 +323,20 @@ static void waiting_hint(CFRunLoopTimerRef timer, void *info)
 
 int main(int argc, char **argv)
 {
+	bool registry = false, from_shared = false;
 	for(int i = 1; i < argc; i++)
+	{
 		if(strcmp(argv[i], "-x") == 0)
 			hex = true;
+		else if(strcmp(argv[i], "-r") == 0)
+			registry = true;
+		else if(strcmp(argv[i], "-s") == 0)
+			from_shared = true;
+	}
+	if(registry)
+		list_registry();
+	if(from_shared)
+		return follow_shared();
 
 	IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
 	if(!manager)

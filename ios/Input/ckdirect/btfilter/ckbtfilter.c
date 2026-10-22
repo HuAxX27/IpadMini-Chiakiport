@@ -13,6 +13,7 @@
 // The method (hooking read and write on BTServer's HCI socket) comes from
 // MFiWrapper's BTServerFilter, by Jason Fetters, 2014, GPLv3 or later.
 
+#include "ck_ds5_shared.h"
 #include "ck_hci_filter.h"
 
 #include <substrate.h>
@@ -24,6 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <syslog.h>
@@ -51,7 +53,13 @@ struct ck_sockaddr_ctl
 };
 
 #define HCI_CONTROL_NAME "com.apple.uart.bluetooth"
+// The Linux test (ios/tests/ckbtfilter_test.c) writes both files elsewhere.
+#ifndef LOG_PATH
 #define LOG_PATH "/tmp/ckbtfilter.log"
+#endif
+#ifndef SHARED_PATH
+#define SHARED_PATH CK_DS5_SHARED_PATH
+#endif
 #define LOG_LIMIT (512 * 1024)
 #define SEEN_MAX 32
 
@@ -81,6 +89,42 @@ static struct
 	bool split;
 } seen[SEEN_MAX];
 static size_t seen_count;
+
+// Devices whose class the filter rewrote, and the HID channels of their
+// connection. Only their HID traffic is logged, so nothing a real keyboard
+// sends ever reaches the log.
+#define PADS_MAX 4
+#define PSM_HID_CONTROL 0x0011
+#define PSM_HID_INTERRUPT 0x0013
+#define HID_LOG_MAX 16      // HID messages other than input reports, per connection
+#define HID_FIRST_INPUTS 3  // input reports logged one by one, per connection
+#define HID_SUMMARY_SECONDS 10
+
+typedef struct
+{
+	uint16_t local;  // our channel ID: the pad's data arrives on it
+	uint16_t remote; // the pad's channel ID: our data goes to it
+} Channel;
+
+static struct
+{
+	uint8_t bdaddr[6];
+	bool connected;
+	uint16_t handle;
+	Channel control;
+	Channel interrupt;
+	unsigned inputs;        // input reports in this connection
+	unsigned window_inputs; // since window_start
+	time_t window_start;
+	unsigned logged;        // other HID messages logged in this connection
+	uint8_t last_id;
+	uint16_t last_len;
+} pads[PADS_MAX];
+static size_t pad_count;
+
+// Where the pad's input reports go for other processes (ck_ds5_shared.h).
+static CKDS5Shared *shared;
+static bool shared_tried;
 
 // --- log ---
 
@@ -138,10 +182,14 @@ static uint16_t le16(const uint8_t *p)
 
 // --- what goes to the log ---
 
+static void remember_pad(const uint8_t *bdaddr);
+
 static void on_device_class(void *user, const CKHciDeviceClass *device)
 {
 	(void)user;
 	bool request = device->event == CK_HCI_EVENT_CONNECTION_REQUEST;
+	if(device->rewritten)
+		remember_pad(device->bdaddr);
 	if(!request)
 	{
 		size_t i;
@@ -170,19 +218,224 @@ static void on_device_class(void *user, const CKHciDeviceClass *device)
 			: device->split ? ": gamepad, but its class came in two reads, left alone" : "");
 }
 
-static void log_l2cap(const char *dir, const CKHciPacket *p)
+// --- the pads ---
+
+static int pad_by_addr(const uint8_t *bdaddr)
 {
-	// ACL payload: L2CAP length (2), channel ID (2); channel 1 carries signaling commands.
-	const uint8_t *d = p->prefix;
-	if(p->length < 8 || le16(d + 2) != 0x0001)
+	for(size_t i = 0; i < pad_count; i++)
+		if(memcmp(pads[i].bdaddr, bdaddr, 6) == 0)
+			return (int)i;
+	return -1;
+}
+
+static int pad_by_handle(uint16_t handle)
+{
+	for(size_t i = 0; i < pad_count; i++)
+		if(pads[i].connected && pads[i].handle == handle)
+			return (int)i;
+	return -1;
+}
+
+static void remember_pad(const uint8_t *bdaddr)
+{
+	if(pad_by_addr(bdaddr) >= 0 || pad_count == PADS_MAX)
 		return;
+	memset(&pads[pad_count], 0, sizeof(pads[pad_count]));
+	memcpy(pads[pad_count].bdaddr, bdaddr, 6);
+	pad_count++;
+}
+
+// Maps SHARED_PATH the first time a pad connects.
+static void open_shared(void)
+{
+	if(shared_tried)
+		return;
+	shared_tried = true;
+	int fd = orig_open(SHARED_PATH, O_RDWR | O_CREAT, 0644);
+	if(fd < 0)
+	{
+		log_line("cannot open %s: %s", SHARED_PATH, strerror(errno));
+		return;
+	}
+	void *map = MAP_FAILED;
+	if(ftruncate(fd, (off_t)sizeof(CKDS5Shared)) == 0)
+		map = mmap(NULL, sizeof(CKDS5Shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	int saved = errno;
+	orig_close(fd);
+	if(map == MAP_FAILED)
+	{
+		log_line("cannot map %s: %s", SHARED_PATH, strerror(saved));
+		return;
+	}
+	shared = map;
+	ck_ds5_shared_attach(shared);
+	log_line("sharing the pad's input reports in %s", SHARED_PATH);
+}
+
+static void pad_connected(const uint8_t *bdaddr, uint16_t handle)
+{
+	int i = pad_by_addr(bdaddr);
+	if(i < 0)
+		return;
+	uint8_t addr[6];
+	memcpy(addr, bdaddr, 6);
+	memset(&pads[i], 0, sizeof(pads[i]));
+	memcpy(pads[i].bdaddr, addr, 6);
+	pads[i].connected = true;
+	pads[i].handle = handle;
+	pads[i].window_start = time(NULL);
+	open_shared();
+}
+
+static void pad_disconnected(uint16_t handle)
+{
+	int i = pad_by_handle(handle);
+	if(i < 0)
+		return;
+	char a[18];
+	log_line("pad %s gone after %u input reports", addr_str(pads[i].bdaddr, a), pads[i].inputs);
+	pads[i].connected = false;
+	if(shared)
+		ck_ds5_shared_write(shared, NULL, 0);
+}
+
+static const char *hidp_type(uint8_t header)
+{
+	switch(header >> 4)
+	{
+		case 0x0: return "HANDSHAKE";
+		case 0x1: return "HID_CONTROL";
+		case 0x4: return "GET_REPORT";
+		case 0x5: return "SET_REPORT";
+		case 0x6: return "GET_PROTOCOL";
+		case 0x7: return "SET_PROTOCOL";
+		case 0xa: return "DATA";
+		default: return "other";
+	}
+}
+
+// One HIDP message on a pad's control or interrupt channel: input reports are
+// counted, everything else is logged up to HID_LOG_MAX per connection.
+static void pad_hid(int i, bool from_pad, const char *channel, const uint8_t *msg, uint16_t len)
+{
+	if(len == 0)
+		return;
+	char a[18];
+	if(from_pad && msg[0] == 0xa1 && len >= 2)
+	{
+		pads[i].inputs++;
+		pads[i].window_inputs++;
+		pads[i].last_id = msg[1];
+		pads[i].last_len = (uint16_t)(len - 1);
+		if(shared)
+			ck_ds5_shared_write(shared, msg + 1, len - 1u);
+		if(pads[i].inputs <= HID_FIRST_INPUTS)
+			log_line("hid input report 0x%02x from %s on %s, %u bytes", msg[1], addr_str(pads[i].bdaddr, a), channel,
+				len - 1);
+		time_t now = time(NULL);
+		if(now - pads[i].window_start >= HID_SUMMARY_SECONDS)
+		{
+			log_line("hid input from %s: %u reports in %ld s, last 0x%02x with %u bytes", addr_str(pads[i].bdaddr, a),
+				pads[i].window_inputs, (long)(now - pads[i].window_start), pads[i].last_id, pads[i].last_len);
+			pads[i].window_inputs = 0;
+			pads[i].window_start = now;
+		}
+		return;
+	}
+	if(pads[i].logged >= HID_LOG_MAX)
+		return;
+	pads[i].logged++;
+	log_line("hid %s %s on %s: %s 0x%02x, report 0x%02x, %u bytes", from_pad ? "from" : "to",
+		addr_str(pads[i].bdaddr, a), channel, hidp_type(msg[0]), msg[0], len >= 2 ? msg[1] : 0, len);
+}
+
+static Channel *hid_channel(int i, uint16_t psm)
+{
+	if(psm == PSM_HID_CONTROL)
+		return &pads[i].control;
+	if(psm == PSM_HID_INTERRUPT)
+		return &pads[i].interrupt;
+	return NULL;
+}
+
+// L2CAP signaling (channel 1): logs connections and keeps the CIDs of the pads' HID channels.
+static void l2cap_signal(int pad, bool from_chip, const uint8_t *d, uint16_t length)
+{
+	const char *dir = from_chip ? "chip->" : "->chip";
+	if(length < 8)
+		return;
+	uint16_t a = le16(d + 8), b = length >= 12 ? le16(d + 10) : 0;
 	switch(d[4])
 	{
-		case 0x01: log_line("%s l2cap command reject, reason %u", dir, le16(d + 8)); break;
-		case 0x02: log_line("%s l2cap connection request, psm 0x%04x", dir, le16(d + 8)); break;
-		case 0x03: log_line("%s l2cap connection response, result %u status %u", dir, le16(d + 12), le16(d + 14)); break;
-		case 0x06: log_line("%s l2cap disconnection request", dir); break;
+		case 0x01: log_line("%s l2cap command reject, reason %u", dir, a); break;
+		case 0x02: // connection request: psm, source CID
+		{
+			log_line("%s l2cap connection request, psm 0x%04x, cid 0x%04x", dir, a, b);
+			Channel *ch = pad >= 0 ? hid_channel(pad, a) : NULL;
+			if(ch)
+			{
+				ch->local = from_chip ? 0 : b;
+				ch->remote = from_chip ? b : 0;
+			}
+			break;
+		}
+		case 0x03: // connection response: destination CID, source CID, result, status
+		{
+			uint16_t result = length >= 16 ? le16(d + 12) : 0xffff;
+			log_line("%s l2cap connection response, cids 0x%04x 0x%04x, result %u status %u", dir, a, b, result,
+				length >= 16 ? le16(d + 14) : 0);
+			if(pad < 0 || result != 0)
+				break;
+			// The responder's CID is the destination one; the source CID names the requester's.
+			Channel *chs[2] = { &pads[pad].control, &pads[pad].interrupt };
+			for(int k = 0; k < 2; k++)
+			{
+				if(from_chip && chs[k]->local == b && chs[k]->remote == 0)
+					chs[k]->remote = a;
+				else if(!from_chip && chs[k]->remote == b && chs[k]->local == 0)
+					chs[k]->local = a;
+			}
+			break;
+		}
+		case 0x06: log_line("%s l2cap disconnection request, cids 0x%04x 0x%04x", dir, a, b); break;
 		default: break;
+	}
+}
+
+static void on_acl(bool from_chip, const CKHciPacket *p)
+{
+	// ACL payload: L2CAP length (2), channel ID (2), then the channel's data.
+	if((p->flags & 0x3) == 0x1 || p->length < 5)
+		return; // a continuing fragment carries no L2CAP header
+	const uint8_t *d = p->prefix;
+	uint16_t cid = le16(d + 2);
+	int pad = pad_by_handle(p->id);
+	if(cid == 0x0001)
+	{
+		l2cap_signal(pad, from_chip, d, p->length);
+		return;
+	}
+	if(pad < 0)
+		return;
+	uint16_t len = le16(d);
+	if(len > p->length - 4)
+		len = (uint16_t)(p->length - 4);
+	if(len > CK_HCI_PREFIX_SIZE - 4)
+		len = CK_HCI_PREFIX_SIZE - 4; // only the prefix was kept
+	const Channel *control = &pads[pad].control, *interrupt = &pads[pad].interrupt;
+	if(from_chip)
+	{
+		if(cid == interrupt->local && cid)
+			pad_hid(pad, true, "interrupt", d + 4, len);
+		else if(cid == control->local && cid)
+			pad_hid(pad, true, "control", d + 4, len);
+	}
+	else
+	{
+		if(cid == interrupt->remote && cid)
+			pad_hid(pad, false, "interrupt", d + 4, len);
+		else if(cid == control->remote && cid)
+			pad_hid(pad, false, "control", d + 4, len);
 	}
 }
 
@@ -193,15 +446,23 @@ static void on_packet_from_chip(void *user, const CKHciPacket *p)
 	char a[18];
 	if(p->type == CK_HCI_ACL)
 	{
-		log_l2cap("chip->", p);
+		on_acl(true, p);
 		return;
 	}
 	if(p->type != CK_HCI_EVENT)
 		return;
 	switch(p->id)
 	{
-		case 0x03: log_line("connection complete %s, status 0x%02x, handle 0x%03x", addr_str(d + 3, a), d[0], le16(d + 1)); break;
-		case 0x05: log_line("disconnected handle 0x%03x, status 0x%02x, reason 0x%02x", le16(d + 1), d[0], d[3]); break;
+		case 0x03:
+			log_line("connection complete %s, status 0x%02x, handle 0x%03x", addr_str(d + 3, a), d[0], le16(d + 1));
+			if(d[0] == 0)
+				pad_connected(d + 3, le16(d + 1) & 0x0fff);
+			break;
+		case 0x05:
+			log_line("disconnected handle 0x%03x, status 0x%02x, reason 0x%02x", le16(d + 1), d[0], d[3]);
+			if(d[0] == 0)
+				pad_disconnected(le16(d + 1) & 0x0fff);
+			break;
 		case 0x06: log_line("authentication complete, handle 0x%03x, status 0x%02x", le16(d + 1), d[0]); break;
 		case 0x07:
 		{
@@ -241,7 +502,7 @@ static void on_packet_to_chip(void *user, const CKHciPacket *p)
 	char a[18];
 	if(p->type == CK_HCI_ACL)
 	{
-		log_l2cap("->chip", p);
+		on_acl(false, p);
 		return;
 	}
 	if(p->type != CK_HCI_COMMAND)

@@ -10,6 +10,7 @@
 #define CK_IOHID_H
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach_types.h>
 
 #include <stdint.h>
 
@@ -60,6 +61,25 @@ void IOHIDDeviceRegisterInputReportCallback(IOHIDDeviceRef device, uint8_t *repo
 	IOHIDReportCallback callback, void *context);
 void IOHIDDeviceScheduleWithRunLoop(IOHIDDeviceRef device, CFRunLoopRef runLoop, CFStringRef runLoopMode);
 void IOHIDDeviceUnscheduleFromRunLoop(IOHIDDeviceRef device, CFRunLoopRef runLoop, CFStringRef runLoopMode);
+
+// The IORegistry (IOKitLib.h), to look for HID services that IOHIDManager does not show.
+typedef mach_port_t io_object_t;
+typedef io_object_t io_iterator_t;
+typedef io_object_t io_registry_entry_t;
+typedef char io_name_t[128];
+#define kIOServicePlane "IOService"
+#define kIORegistryIterateRecursively 0x00000001
+
+extern const mach_port_t kIOMasterPortDefault;
+kern_return_t IORegistryCreateIterator(mach_port_t masterPort, const io_name_t plane, IOOptionBits options,
+	io_iterator_t *iterator);
+io_object_t IOIteratorNext(io_iterator_t iterator);
+kern_return_t IOObjectRelease(io_object_t object);
+kern_return_t IOObjectGetClass(io_object_t object, io_name_t className);
+boolean_t IOObjectConformsTo(io_object_t object, const io_name_t className);
+kern_return_t IORegistryEntryGetName(io_registry_entry_t entry, io_name_t name);
+CFTypeRef IORegistryEntryCreateCFProperty(io_registry_entry_t entry, CFStringRef key, CFAllocatorRef allocator,
+	IOOptionBits options);
 
 // Device property keys (IOHIDKeys.h).
 #define kIOHIDTransportKey "Transport"

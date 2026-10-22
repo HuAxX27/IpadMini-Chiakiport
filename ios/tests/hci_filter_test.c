@@ -342,6 +342,26 @@ static void test_several_packets_in_one_read(void)
 	CHECK(!f.lost_sync);
 }
 
+static void test_acl_flags(void)
+{
+	// First fragment (packet boundary 10) on handle 0x00b, then a continuing one (01).
+	uint8_t first[] = { 0x02, 0x0b, 0x20, 6, 0, 2, 0, 0x41, 0x00, 0xa1, 0x01 };
+	uint8_t rest[] = { 0x02, 0x0b, 0x10, 2, 0, 0xaa, 0xbb };
+	CKHciFilter f;
+	Log log;
+	init(&f, &log, true);
+	ck_hci_filter_feed(&f, first, sizeof(first));
+	CHECK_EQ(log.last_packet.type, CK_HCI_ACL);
+	CHECK_EQ(log.last_packet.id, 0x00b);
+	CHECK_EQ(log.last_packet.flags, 0x2);
+	CHECK_EQ(log.last_packet.length, 6);
+	CHECK_EQ(log.last_packet.prefix[4], 0xa1);
+	ck_hci_filter_feed(&f, rest, sizeof(rest));
+	CHECK_EQ(log.packets, 2);
+	CHECK_EQ(log.last_packet.id, 0x00b);
+	CHECK_EQ(log.last_packet.flags, 0x1);
+}
+
 static void test_two_responses_left_alone(void)
 {
 	CKHciFilter f;
@@ -421,6 +441,7 @@ int main(void)
 	test_byte_at_a_time();
 	test_other_classes_untouched();
 	test_several_packets_in_one_read();
+	test_acl_flags();
 	test_two_responses_left_alone();
 	test_observe_only();
 	test_commands();

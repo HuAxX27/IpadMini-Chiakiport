@@ -41,14 +41,20 @@ extern "C" {
 /** What the filter turns it into: peripheral, keyboard. */
 #define CK_HCI_COD_MINOR_KEYBOARD 0x40
 
-/** First payload bytes of a packet that the filter keeps for the caller's log. */
-#define CK_HCI_PREFIX_SIZE 32
+/**
+ * First payload bytes of a packet that the filter keeps for the caller: enough
+ * for a whole DualSense Bluetooth input report in one ACL packet (L2CAP
+ * header, HIDP header and the 78-byte report 0x31: 83 bytes).
+ */
+#define CK_HCI_PREFIX_SIZE 96
 
 typedef struct ck_hci_packet_t
 {
 	uint8_t type;
 	/** Event code, or command opcode, or connection handle for ACL and SCO. */
 	uint16_t id;
+	/** ACL and SCO: the four flag bits above the handle. For ACL, (flags & 3) == 1 marks a continuing fragment. */
+	uint8_t flags;
 	/** Payload length from the header. */
 	uint16_t length;
 	/** The first min(length, CK_HCI_PREFIX_SIZE) payload bytes, after any rewrite. */

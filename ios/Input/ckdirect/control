@@ -1,6 +1,6 @@
 Package: com.thehuax.ckdirect
 Name: CK Directo
-Version: 0.1.0
+Version: 0.1.1
 Architecture: iphoneos-arm
 Description: Pruebas de Chiakiport para conectar el DualSense directo al iPad mini 1: filtro de BTServer (ckbtfilter) y lector de HID (ckhidprobe).
 Maintainer: TheHuAx

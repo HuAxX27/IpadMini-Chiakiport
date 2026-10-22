@@ -105,10 +105,12 @@ static void parse_header(CKHciFilter *filter)
 			break;
 		case CK_HCI_ACL:
 			p->id = (uint16_t)((h[0] | (h[1] << 8)) & 0x0fff);
+			p->flags = h[1] >> 4;
 			p->length = (uint16_t)(h[2] | (h[3] << 8));
 			break;
 		case CK_HCI_SCO:
 			p->id = (uint16_t)((h[0] | (h[1] << 8)) & 0x0fff);
+			p->flags = h[1] >> 4;
 			p->length = h[2];
 			break;
 		default: // CK_HCI_EVENT
