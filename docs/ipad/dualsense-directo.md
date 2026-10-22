@@ -2,7 +2,7 @@
 
 Investigación del issue #39 (A5.7) y fuente de entrada de la app (issue #73, A5.8): conectar el DualSense al iPad mini 1 con jailbreak, sin el puente ESP32. Desde el 2026-10-22 es el camino principal para el control: el puente ESP32 queda en pausa.
 
-Estado al 2026-10-22: **el DualSense se lee en el iPad por Bluetooth nativo**, con todos sus botones, los dos sticks y los gatillos (T8). Con el filtro de `BTServer` (`ckbtfilter`) se empareja desde Ajustes, queda "Conectado" y se reconecta solo (T5 y T6). iOS no lo publica como `IOHIDDevice` (T7). Por eso el filtro copia sus reportes a un archivo compartido, y de ahí los lee `ckhidprobe -s`. La versión 0.2.0 (A5.8) trae la fuente que usará la app, `CKDS5Source`, y pasa el pad al reporte completo, con el touchpad, mandándole un reporte de salida. Eso falta probarlo en el iPad (T9). Resultados abajo, en "Resultados en el iPad".
+Estado al 2026-10-22: **el DualSense se lee en el iPad por Bluetooth nativo**, con todos sus botones, los dos sticks y los gatillos (T8). Con el filtro de `BTServer` (`ckbtfilter`) se empareja desde Ajustes, queda "Conectado" y se reconecta solo (T5 y T6). iOS no lo publica como `IOHIDDevice` (T7). Por eso el filtro copia sus reportes a un archivo compartido, y de ahí los lee `ckhidprobe -s`. La versión 0.2.0 (A5.8) trae la fuente que usará la app, `CKDS5Source`, y pasa el pad al reporte completo mandándole un reporte de salida. En el iPad el pad cambió al primer pedido, y la fuente leyó los botones, los sticks, los gatillos y el touchpad (T9). Resultados abajo, en "Resultados en el iPad".
 
 ## Resumen
 
@@ -13,7 +13,7 @@ Estado al 2026-10-22: **el DualSense se lee en el iPad por Bluetooth nativo**, c
 - T1 confirmó que iOS 9.3.5 usa `BTServer`, y T2 que el DualSense no aparece en Ajustes sin ayuda, como se esperaba. El USB no se ha probado porque no hay adaptador de cámara.
 - Con `ckbtfilter`, el DualSense se empareja por Bluetooth nativo y abre sus dos canales HID, pero `BTServer` no lo publica para otros programas (T5 a T7).
 - Los reportes sí llegan a `BTServer`: el filtro los copia a `/tmp/ckds5.report` y `ckhidprobe -s` los lee con cada botón, stick y gatillo bien (T8). Va en el reporte simple, sin touchpad ni movimiento.
-- A5.8 (#73): `CKDS5Source` es el `CKInputSource` (C4) que lee ese archivo, y el filtro le manda al pad dos reportes de salida que lo pasan al reporte completo y encienden su LED de jugador 1. Pendiente de T9.
+- A5.8 (#73): `CKDS5Source` es el `CKInputSource` (C4) que lee ese archivo, y el filtro le manda al pad dos reportes de salida que lo pasan al reporte completo y encienden su LED de jugador 1. En el iPad cambió al primer pedido (T9). En el reporte completo el pad manda unos 675 reportes por segundo, y `BTServer` gasta cerca del 10 % de un núcleo.
 
 ## El iPad de prueba
 
@@ -24,7 +24,7 @@ Estado al 2026-10-22: **el DualSense se lee en el iPad por Bluetooth nativo**, c
 | Jailbreak | Carbon (semi-untethered), con Cydia. Phœnix ya no firma |
 | Wi‑Fi y Bluetooth | Un solo chip Broadcom BCM4334: Bluetooth 4.0 y Wi‑Fi de 2.4 y 5 GHz |
 
-El chip comparte la radio de 2.4 GHz entre Wi‑Fi y Bluetooth. Con un control Bluetooth conectado, el streaming debe ir por Wi‑Fi de **5 GHz** para que no compitan.
+El chip comparte la radio de 2.4 GHz entre Wi‑Fi y Bluetooth. Con un control Bluetooth conectado, el streaming debe ir por Wi‑Fi de **5 GHz** para que no compitan. Más todavía con el reporte completo, en el que el pad transmite unas 675 veces por segundo (T9).
 
 ## Resultados en el iPad
 
@@ -36,7 +36,10 @@ El chip comparte la radio de 2.4 GHz entre Wi‑Fi y Bluetooth. Con un control B
 | T5. Instalar el filtro | `ckbtfilter` carga en `BTServer` (corre como `mobile`, uid 501) y encuentra el socket HCI: `connect fd 7 to kernel control 16 unit 0 (com.apple.uart.bluetooth)`. `BTServer` usa `read` y `write` en ese socket, porque el filtro ve todo el tráfico |
 | T6. Emparejar | Funciona al primer intento. La búsqueda trae al pad con clase `0x002508`, el filtro la cambia a teclado y `BTServer` se conecta. Hace Secure Simple Pairing sin PIN (iPad con E/S 1 y pad con E/S 3, "Just Works"), recibe la llave de enlace (tipo 4), cifra el enlace y abre los canales HID de control (PSM `0x11`) y datos (PSM `0x13`). Ajustes muestra "DualSense Wireless Controller", "Conectado". Al apagar y prender el pad, este vuelve solo: el filtro también cambia la clase en su solicitud de conexión, `BTServer` la acepta con la llave guardada y el pad abre sus dos canales |
 | T7. `ckhidprobe` | `IOHIDManagerOpen` responde bien, pero no aparece ningún dispositivo HID, ni con el pad conectado. `BTServer` no publica el pad como `IOHIDDevice` |
-| T8. Paquete 0.1.1 | Llegan reportes simples `0x01` de 10 bytes por el canal de datos: el filtro contó de 386 a 520 cada 10 segundos con botones en uso. `BTServer` no le manda nada al pad por los canales HID, ni `GET_REPORT` ni `SET_PROTOCOL`; solo abre y cierra SDP. En el IORegistry no hay ningún `IOHIDDevice` ni `IOHIDUserDevice`: solo `IOHIDResource` con un `IOHIDResourceDeviceUserClient` y 75 `IOHIDEventServiceUserClient`. `ckhidprobe -s` lee del archivo compartido cada botón probado con su nombre correcto (cruz, círculo, cuadrado, triángulo, cruceta, L1, R1, Options, Create, PS y el clic del touchpad; L3 y R3 no se probaron), los sticks con arriba e izquierda negativos y los gatillos de 0 a 255. En reposo, los sticks marcan unos cientos de unidades (de 32768) fuera del centro. `ckhidprobe -s` leyó unos 10 reportes por segundo; la versión siguiente cuenta también los que escribió el filtro, para saber si el pad manda pocos cuando nada cambia o si el lector pierde reportes |
+| T8. Paquete 0.1.1 | Llegan reportes simples `0x01` de 10 bytes por el canal de datos: el filtro contó de 386 a 520 cada 10 segundos con botones en uso. `BTServer` no le manda nada al pad por los canales HID, ni `GET_REPORT` ni `SET_PROTOCOL`; solo abre y cierra SDP. En el IORegistry no hay ningún `IOHIDDevice` ni `IOHIDUserDevice`: solo `IOHIDResource` con un `IOHIDResourceDeviceUserClient` y 75 `IOHIDEventServiceUserClient`. `ckhidprobe -s` lee del archivo compartido cada botón probado con su nombre correcto (cruz, círculo, cuadrado, triángulo, cruceta, L1, R1, Options, Create, PS y el clic del touchpad; L3 y R3 no se probaron), los sticks con arriba e izquierda negativos y los gatillos de 0 a 255. En reposo, los sticks marcan unos cientos de unidades (de 32768) fuera del centro. `ckhidprobe -s` leyó unos 10 reportes por segundo; la versión siguiente cuenta también los que escribió el filtro, para saber si el pad manda pocos cuando nada cambia o si el lector pierde reportes. T9 lo explica: por SSH, el lector despierta unas 10 veces por segundo |
+| T9. Paquete 0.2.0 | El filtro abre `/tmp/ckds5.report` en cuanto arranca `BTServer` y anota `chip takes 8 ACL packets of 1021 bytes at a time`. Al conectarse el pad, el filtro le manda los dos reportes de salida con el primer reporte simple. El chip los entrega en 15 ms y el pad pasa al reporte completo `0x31` al primer pedido. Desde ahí manda unos 675 reportes por segundo (de 6248 a 6804 cada 10 s, durante 10 minutos), sin CRC malos ni desconexiones, y sin `could not ask`, `overflowed` ni `lost track`. `ckhidprobe -c`, con el código de `CKDS5Source`, leyó cruz, círculo, cuadrado, triángulo, la cruceta, L1, R1, L2, R2, L3, R3, Options, Create, PS y el clic del touchpad, los dos sticks de punta a punta y un dedo en todo el touchpad, con un ID nuevo en cada toque. La barra de luz siguió azul: el azul que manda el filtro se confunde con el de "conectado". Con el pad transmitiendo, `BTServer` usó 31.6 s de CPU en 5 min 10 s, cerca del 10 % de un núcleo. Por SSH, `ckhidprobe -c` consulta unas 11 veces por segundo y no 125 (abajo) |
+
+Por SSH, `ckhidprobe` despierta cada 80 a 100 ms aunque pida 8 ms (`nanosleep`, T9) o 4 ms (`usleep`, T8). Cada consulta tarda microsegundos, así que es la espera la que se alarga. Lo más probable es que iOS junte los temporizadores de los procesos que no están en primer plano. La app corre en primer plano y debería consultar a 125 Hz. Se comprueba cuando exista (A6), con las métricas de `CKSession`. Lo mismo vale para `ckctl` corrido por SSH.
 
 ## Cómo habla el DualSense
 
@@ -91,7 +94,9 @@ Lo que falta saber, y cómo se prueba:
 | ¿`BTServer` publica el pad como `IOHIDDevice`? | No, ni de otra forma en el IORegistry (T7 y T8) |
 | ¿Llegan los reportes del pad a `BTServer`? ¿`BTServer` le manda algo, como un `GET_REPORT`? | Sí llegan, en reporte simple. `BTServer` no le manda nada (T8) |
 | ¿Se pueden leer los reportes desde el archivo compartido? | Sí, con todos los botones, sticks y gatillos (T8) |
-| ¿Pasa el pad al reporte completo con un reporte de salida que mete el filtro, sin estorbar a `BTServer`? | T9 (paquete 0.2.0) |
+| ¿Pasa el pad al reporte completo con un reporte de salida que mete el filtro, sin estorbar a `BTServer`? | Sí, al primer pedido, y `BTServer` sigue bien (T9) |
+| ¿Cuánto cuesta el reporte completo? | El pad manda unos 675 por segundo y `BTServer` usa cerca del 10 % de un núcleo (T9). Se mide otra vez con la app y el video (A0.4) |
+| ¿La app consulta la fuente a 125 Hz? Por SSH, `ckhidprobe` solo llega a unas 11 consultas por segundo | Cuando exista la app (A6), con las métricas de `CKSession` |
 | ¿La app puede leer `/tmp/ckds5.report`? Instalada en `/Applications` no tiene sandbox, y el archivo es legible para todos | Cuando exista la app (A6); `ckhidprobe -c` corre igual que ella |
 | ¿iOS esconde el teclado en pantalla al creer que hay un teclado? La clase falsa solo se usa al emparejar; el descriptor HID dice GamePad | T6, tocando un campo de texto |
 
@@ -247,7 +252,7 @@ ckhidprobe -c
 
 - La barra de luz debería dejar la animación de inicio y quedarse azul fija, y debería encenderse el LED del centro bajo el touchpad. Eso quiere decir que el pad recibió los dos reportes del filtro.
 - En el registro, lo nuevo es `chip takes ... ACL packets ...`, `asked ... for the full report, try 1`, `chip sent the output reports to ...` y `... sends the full report now, after 1 requests`. Son malas señales `could not ask`, `chip ACL buffers overflowed` y `lost track`.
-- `ckhidprobe -c` lee el control con el mismo código que usará la app. Presiona cada botón, también L3 y R3, mueve los sticks y aprieta los gatillos. Después **desliza un dedo por el touchpad** y luego dos: deberían salir líneas `bt-full` con `touch`. Cada 5 segundos sale un resumen: unas 600 consultas, cuántos reportes llegaron y la consulta más lenta en microsegundos. Termina con Ctrl-C.
+- `ckhidprobe -c` lee el control con el mismo código que usará la app. Presiona cada botón, también L3 y R3, mueve los sticks y aprieta los gatillos. Después **desliza un dedo por el touchpad** y luego dos: deberían salir líneas `bt-full` con `touch`. Cada 5 segundos sale un resumen: cuántas consultas hizo (por SSH son unas 55, ver T9), cuántos reportes nuevos leyó y la consulta más lenta en microsegundos. Termina con Ctrl-C.
 - Usa el control un par de minutos y apágalo y préndelo una vez: el Bluetooth debe seguir bien, y el pad debe volver a quedar azul con su LED.
 
 Qué reportar: qué hicieron la barra de luz y los LED, el registro completo y la salida de `ckhidprobe -c` con el touchpad. Si el pad se desconecta o el Bluetooth se porta raro, di en qué momento. Para volver atrás, instala otra vez el 0.1.1 y corre `killall BTServer`.
@@ -256,8 +261,8 @@ Qué reportar: qué hicieron la barra de luz y los LED, el registro completo y l
 
 ## Cómo se decide
 
-- Bluetooth nativo con reporte completo: es el camino. El puente ESP32 queda opcional.
-- Si iOS nunca publica el pad, la app lee el archivo que comparte `ckbtfilter`. Funciona igual con el reporte simple, y el completo necesita que el filtro le mande algo al pad. **Es lo que pasó (T8): Bluetooth nativo con reporte simple, leído desde el archivo compartido.** El paquete 0.2.0 le manda un reporte de salida para el completo (T9). Si eso falla, el touchpad se cubre con los controles táctiles (A5.5).
+- Bluetooth nativo con reporte completo: es el camino, y funciona desde T9. El puente ESP32 queda opcional.
+- Si iOS nunca publica el pad, la app lee el archivo que comparte `ckbtfilter`. Funciona igual con el reporte simple, y el completo necesita que el filtro le mande algo al pad. **Es lo que pasó (T8): Bluetooth nativo con reporte simple, leído desde el archivo compartido.** Con el paquete 0.2.0, el filtro le manda un reporte de salida y el pad pasa al completo, con el touchpad (T9).
 - Bluetooth nativo solo con reporte simple: también sirve; el touchpad se cubre con los controles táctiles (A5.5).
 - Bluetooth falla y USB funciona: USB con hub es la conexión directa.
 - Fallan los dos: se evalúa BTstack o se retoma el puente ESP32.
