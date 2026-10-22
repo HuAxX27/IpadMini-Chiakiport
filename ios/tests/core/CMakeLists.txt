@@ -58,7 +58,7 @@ add_test(NAME chiaki_core_link_check COMMAND core-link-check)
 # the ports a PS5 uses, so the test runs on its own and the suites above never touch the network.
 set(CK_IOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 add_library(ck-consoles STATIC "${CK_IOS_DIR}/Bridge/ck_consoles.c" "${CK_IOS_DIR}/Bridge/ck_registry.c"
-	"${CK_IOS_DIR}/cli/ckctl.c")
+	"${CK_IOS_DIR}/Bridge/ck_session.c" "${CK_IOS_DIR}/cli/ckctl.c")
 target_include_directories(ck-consoles PUBLIC "${CK_IOS_DIR}")
 target_link_libraries(ck-consoles PUBLIC chiaki-lib)
 target_compile_options(ck-consoles PRIVATE -Wall -Wextra -Werror)
@@ -91,3 +91,15 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME ck_registry_plistlib
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_registry_plist.py"
 		${CMAKE_CROSSCOMPILING_EMULATOR} "$<TARGET_FILE:ck-registry-tool>")
+
+# A2.6: the C half of CKSession (Bridge/ck_session.h) against the same fake PS5, which answers the
+# session request but has no stream. It binds the PS5's ports, so it runs on its own as well.
+add_executable(ck-session-tests session.c "${CK_IOS_DIR}/tests/fakes/fake_ps5.c")
+target_include_directories(ck-session-tests PRIVATE "${CK_IOS_DIR}/tests/fakes")
+target_compile_options(ck-session-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-session-tests ck-consoles munit Threads::Threads)
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+    target_compile_definitions(ck-session-tests PRIVATE CK_TEST_EMULATED)
+endif()
+add_test(NAME ck_session COMMAND ck-session-tests)
+set_tests_properties(ck_session PROPERTIES RUN_SERIAL TRUE TIMEOUT 300)

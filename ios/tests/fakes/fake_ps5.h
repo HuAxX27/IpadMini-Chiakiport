@@ -9,6 +9,9 @@
 //   TCP 9295   registration: decrypts the request with the PIN, checks the
 //              PSN Account ID and answers with the console's keys, encrypted
 //              like a PS5 does, or with the refusal a PS5 sends.
+//              Session request (A2.6): answers it as session_mode says. The
+//              session goes no further than the ctrl connection, which is
+//              refused: there is no fake stream.
 //
 // It uses the core's own rpcrypt, so a registration that works here works
 // the same way up to the bytes on the wire. Every value in it is made up.
@@ -51,6 +54,18 @@ typedef enum fake_ps5_regist_mode_t
 	FAKE_PS5_REGIST_SERVER_ERROR,
 } FakePs5RegistMode;
 
+typedef enum fake_ps5_session_mode_t
+{
+	/** 200 with a nonce, as a PS5 that takes the session; then refuse the ctrl request. */
+	FAKE_PS5_SESSION_NONCE,
+	/** 403: Remote Play is in use by another device (application reason 0x80108b10). */
+	FAKE_PS5_SESSION_IN_USE,
+	/** Keep the connection open and never answer, until the client gives up or stops. */
+	FAKE_PS5_SESSION_HANG,
+	/** Close the connection without answering. */
+	FAKE_PS5_SESSION_CLOSE,
+} FakePs5SessionMode;
+
 typedef struct fake_ps5_t
 {
 	// Set before fake_ps5_start().
@@ -59,6 +74,7 @@ typedef struct fake_ps5_t
 	ChiakiDiscoveryHostState state;
 	bool discovery_silent;
 	FakePs5RegistMode regist_mode;
+	FakePs5SessionMode session_mode;
 
 	// Read with the mutex held while it runs.
 	pthread_mutex_t mutex;
@@ -68,6 +84,12 @@ typedef struct fake_ps5_t
 	int regist_requests;
 	/** The PSN Account ID of the last request, as the request carried it. */
 	char last_account_b64[32];
+	int session_requests;
+	int ctrl_requests;
+	/** The RP-Registkey header of the last session request. */
+	char last_session_regist_key[64];
+	/** A HANG connection, closed at the next request or at stop. */
+	int held_fd;
 
 	int udp_discovery;
 	int udp_regist;
@@ -84,5 +106,7 @@ void fake_ps5_stop(FakePs5 *ps5);
 
 ChiakiDiscoveryHostState fake_ps5_state(FakePs5 *ps5);
 int fake_ps5_wakeups(FakePs5 *ps5);
+int fake_ps5_session_requests(FakePs5 *ps5);
+int fake_ps5_ctrl_requests(FakePs5 *ps5);
 
 #endif // CK_FAKE_PS5_H
