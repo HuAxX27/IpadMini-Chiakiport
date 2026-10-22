@@ -2,6 +2,8 @@
 
 #include "ck_ds5.h"
 
+#include <string.h>
+
 // Offsets inside the common part of the full report, which starts right after
 // the report ID on USB and after the report ID and a sequence byte on Bluetooth.
 #define FULL_STICKS 0
@@ -17,6 +19,22 @@
 #define SIMPLE_BUTTONS 4
 #define SIMPLE_L2 7
 #define SIMPLE_R2 8
+
+// Bluetooth output report: report ID, sequence in the high nibble, a tag
+// byte, then the part shared with USB, then reserved bytes and the CRC.
+#define OUT_SEQ 1
+#define OUT_TAG 2
+#define OUT_TAG_VALUE 0x10
+#define OUT_COMMON 3
+#define OUT_VALID_FLAG1 (OUT_COMMON + 1)
+#define OUT_VALID_FLAG1_LIGHTBAR 0x04
+#define OUT_VALID_FLAG1_PLAYER_LEDS 0x10
+#define OUT_VALID_FLAG2 (OUT_COMMON + 38)
+#define OUT_VALID_FLAG2_LIGHTBAR_SETUP 0x02
+#define OUT_LIGHTBAR_SETUP (OUT_COMMON + 41)
+#define OUT_LIGHTBAR_SETUP_LIGHT_OUT 0x02
+#define OUT_PLAYER_LEDS (OUT_COMMON + 43)
+#define OUT_LIGHTBAR_RGB (OUT_COMMON + 44)
 
 // Some HID stacks pad the Bluetooth simple report up to the size of the full one.
 #define BT_SIMPLE_PADDED_SIZE CK_DS5_BT_INPUT_SIZE
@@ -151,6 +169,36 @@ CKDS5ReportKind ck_ds5_parse_input_report(const uint8_t *report, size_t len, Chi
 		default:
 			return CK_DS5_REPORT_UNKNOWN;
 	}
+}
+
+void ck_ds5_bt_output_report(uint8_t report[CK_DS5_BT_OUTPUT_SIZE], const CKDS5Output *output)
+{
+	static const uint8_t hidp_output_header = 0xa2;
+	memset(report, 0, CK_DS5_BT_OUTPUT_SIZE);
+	report[0] = CK_DS5_REPORT_ID_BT_OUTPUT;
+	report[OUT_SEQ] = (uint8_t)((output->seq & 0x0f) << 4);
+	report[OUT_TAG] = OUT_TAG_VALUE;
+	if(output->lightbar_fade_out)
+	{
+		report[OUT_VALID_FLAG2] |= OUT_VALID_FLAG2_LIGHTBAR_SETUP;
+		report[OUT_LIGHTBAR_SETUP] = OUT_LIGHTBAR_SETUP_LIGHT_OUT;
+	}
+	if(output->set_lightbar)
+	{
+		report[OUT_VALID_FLAG1] |= OUT_VALID_FLAG1_LIGHTBAR;
+		report[OUT_LIGHTBAR_RGB] = output->red;
+		report[OUT_LIGHTBAR_RGB + 1] = output->green;
+		report[OUT_LIGHTBAR_RGB + 2] = output->blue;
+	}
+	if(output->set_player_leds)
+	{
+		report[OUT_VALID_FLAG1] |= OUT_VALID_FLAG1_PLAYER_LEDS;
+		report[OUT_PLAYER_LEDS] = output->player_leds & 0x1f;
+	}
+	uint32_t crc = ck_ds5_crc32(0, &hidp_output_header, 1);
+	crc = ck_ds5_crc32(crc, report, CK_DS5_BT_OUTPUT_SIZE - 4);
+	for(int i = 0; i < 4; i++)
+		report[CK_DS5_BT_OUTPUT_SIZE - 4 + i] = (uint8_t)(crc >> (8 * i));
 }
 
 uint32_t ck_ds5_crc32(uint32_t crc, const uint8_t *buf, size_t len)
