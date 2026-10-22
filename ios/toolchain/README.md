@@ -19,6 +19,8 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `hello/` | Hola mundo UIKit (CK Hola), empaquetado como `.deb`: la prueba P1 en el iPad |
 | `build-deps.sh` | Compila mbedTLS y Opus para armv7 como librerías estáticas |
 | `core-check.sh`, `core-check/` | Compila el core completo para el iPad y lo enlaza en un ejecutable firmado |
+| `ci-ipad.sh` | Lo que el CI compila para el iPad en cada PR: contratos, core y paquetes `.deb` |
+| `apt-linux-tests.sh` | Instala en Ubuntu 24.04 lo que piden las pruebas en Linux, también para armhf |
 
 ## Con Docker (recomendado)
 
@@ -127,6 +129,25 @@ Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgo
 ## Actualizar una versión
 
 Cambia la URL o el commit en `versions.env` junto con su sha256 (`sha256sum archivo.tar.xz`), y corre la prueba de humo con Docker y sin Docker. Si cambia el SDK, revisa que `fix-sdk93.sh` siga aplicando: el script falla si no encuentra lo que espera.
+
+## CI en cada PR
+
+`.github/workflows/ios-ci.yml` corre en cada PR y en cada push a `main`, toque lo que toque:
+
+- **`iPad build`** instala el toolchain con `install-theos.sh` y corre `ci-ipad.sh`, que:
+  1. compila mbedTLS y Opus (`build-deps.sh`);
+  2. revisa los contratos contra el SDK 9.3 para armv7: `ios/tests/contracts_check.c` en C, para que sus `_Static_assert` valgan con la estructura de 32 bits del iPad, y `ios/Bridge/CKSession.h` como Objective-C, con las mismas definiciones que el core;
+  3. compila el core (`core-check.sh`);
+  4. empaqueta como `.deb` cada proyecto de Theos que haya bajo `ios/`, es decir, cada carpeta con un `Makefile` y un archivo `control`. Hoy es solo CK Hola; la app y `ckctl` entran solos cuando tengan su `control`.
+
+  Deja dos artefactos: **`ipad-debs`**, los `.deb` para instalar en el iPad, e **`ios-libs-armv7`**, las librerías estáticas para armv7 (core, nanopb, jerasure, gf-complete, mbedTLS y Opus) con los headers de mbedTLS y Opus y las licencias.
+- **`Linux tests`** instala lo necesario con `apt-linux-tests.sh` y corre, cada una en su paso, las pruebas en C del port: los contratos, el parser del DualSense (A5.7), H.264 (A3, también en armv7 bajo `qemu-arm`) y el core (A2: OpenSSL, mbedTLS y mbedTLS en armv7 bajo `qemu-arm`, más las pruebas heredadas de VitaRPS5).
+
+Lo mismo corre en un Linux sin CI: `THEOS=... ios/toolchain/ci-ipad.sh` deja todo en `build-ios-ci/`, y `sudo ios/toolchain/apt-linux-tests.sh` prepara un Ubuntu 24.04 para las pruebas.
+
+Para bajar el `.deb` de un PR: en la pestaña **Checks** del PR, abre **iOS CI**, baja hasta **Artifacts** y descarga `ipad-debs`. Llega como `.zip` con el `.deb` adentro. GitHub pide haber iniciado sesión para descargarlo.
+
+`ios-toolchain.yml` sigue revisando la imagen de Docker y el script de instalación cuando cambia esta carpeta.
 
 ## Licencias
 
