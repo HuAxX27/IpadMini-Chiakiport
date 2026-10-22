@@ -2,7 +2,7 @@
 
 Investigación del issue #39: conectar el DualSense al iPad mini 1 con jailbreak, sin el puente ESP32. Desde el 2026-10-22 es el camino principal para el control: el puente ESP32 queda en pausa.
 
-Estado al 2026-10-22: con el filtro de `BTServer` (`ckbtfilter`), el DualSense se empareja desde Ajustes, queda "Conectado" y se reconecta solo (T5 y T6). Pero iOS no lo publica como `IOHIDDevice`, así que `ckhidprobe` no lo ve (T7). La versión 0.1.1 del paquete averigua si los reportes llegan a `BTServer` y, si llegan, los comparte en un archivo para leerlos sin `IOHIDManager` (T8). Resultados abajo, en "Resultados en el iPad".
+Estado al 2026-10-22: **el DualSense se lee en el iPad por Bluetooth nativo**, con todos sus botones, los dos sticks y los gatillos (T8). Con el filtro de `BTServer` (`ckbtfilter`) se empareja desde Ajustes, queda "Conectado" y se reconecta solo (T5 y T6). iOS no lo publica como `IOHIDDevice` (T7). Por eso el filtro copia sus reportes a un archivo compartido, y de ahí los lee `ckhidprobe -s`; lo mismo hará la app (A5.8, #73). Falta el reporte completo (touchpad y sensores de movimiento), que pide inyectar un `GET_REPORT`. Resultados abajo, en "Resultados en el iPad".
 
 ## Resumen
 
@@ -12,7 +12,8 @@ Estado al 2026-10-22: con el filtro de `BTServer` (`ckbtfilter`), el DualSense s
 - Ya está listo, y probado en Linux, el parser que convierte los reportes del DualSense (USB y Bluetooth) en `ChiakiControllerState`: `ios/Input/ck_ds5.h`. Sirve para cualquiera de los tres caminos.
 - T1 confirmó que iOS 9.3.5 usa `BTServer`, y T2 que el DualSense no aparece en Ajustes sin ayuda, como se esperaba. El USB no se ha probado porque no hay adaptador de cámara.
 - Con `ckbtfilter`, el DualSense se empareja por Bluetooth nativo y abre sus dos canales HID, pero `BTServer` no lo publica para otros programas (T5 a T7).
-- Siguiente paso: T8, con el paquete 0.1.1, para ver si los reportes llegan a `BTServer` y leerlos desde el archivo que comparte el filtro.
+- Los reportes sí llegan a `BTServer`: el filtro los copia a `/tmp/ckds5.report` y `ckhidprobe -s` los lee con cada botón, stick y gatillo bien (T8). Va en el reporte simple, sin touchpad ni movimiento.
+- Siguiente paso: A5.8 (#73), un `CKInputSource` que lee ese archivo. Aparte, ver si se puede pasar al reporte completo inyectando un `GET_REPORT` del `0x05` desde el filtro.
 
 ## El iPad de prueba
 
@@ -35,6 +36,7 @@ El chip comparte la radio de 2.4 GHz entre Wi‑Fi y Bluetooth. Con un control B
 | T5. Instalar el filtro | `ckbtfilter` carga en `BTServer` (corre como `mobile`, uid 501) y encuentra el socket HCI: `connect fd 7 to kernel control 16 unit 0 (com.apple.uart.bluetooth)`. `BTServer` usa `read` y `write` en ese socket, porque el filtro ve todo el tráfico |
 | T6. Emparejar | Funciona al primer intento. La búsqueda trae al pad con clase `0x002508`, el filtro la cambia a teclado y `BTServer` se conecta. Hace Secure Simple Pairing sin PIN (iPad con E/S 1 y pad con E/S 3, "Just Works"), recibe la llave de enlace (tipo 4), cifra el enlace y abre los canales HID de control (PSM `0x11`) y datos (PSM `0x13`). Ajustes muestra "DualSense Wireless Controller", "Conectado". Al apagar y prender el pad, este vuelve solo: el filtro también cambia la clase en su solicitud de conexión, `BTServer` la acepta con la llave guardada y el pad abre sus dos canales |
 | T7. `ckhidprobe` | `IOHIDManagerOpen` responde bien, pero no aparece ningún dispositivo HID, ni con el pad conectado. `BTServer` no publica el pad como `IOHIDDevice` |
+| T8. Paquete 0.1.1 | Llegan reportes simples `0x01` de 10 bytes por el canal de datos: el filtro contó de 386 a 520 cada 10 segundos con botones en uso. `BTServer` no le manda nada al pad por los canales HID, ni `GET_REPORT` ni `SET_PROTOCOL`; solo abre y cierra SDP. En el IORegistry no hay ningún `IOHIDDevice` ni `IOHIDUserDevice`: solo `IOHIDResource` con un `IOHIDResourceDeviceUserClient` y 75 `IOHIDEventServiceUserClient`. `ckhidprobe -s` lee del archivo compartido cada botón probado con su nombre correcto (cruz, círculo, cuadrado, triángulo, cruceta, L1, R1, Options, Create, PS y el clic del touchpad; L3 y R3 no se probaron), los sticks con arriba e izquierda negativos y los gatillos de 0 a 255. En reposo, los sticks marcan unos cientos de unidades (de 32768) fuera del centro. `ckhidprobe -s` leyó unos 10 reportes por segundo; la versión siguiente cuenta también los que escribió el filtro, para saber si el pad manda pocos cuando nada cambia o si el lector pierde reportes |
 
 ## Cómo habla el DualSense
 
@@ -78,9 +80,10 @@ Lo que falta saber, y cómo se prueba:
 | ¿Cómo rechaza hoy iOS al DualSense? | No lo muestra en la lista (T2) |
 | ¿`BTServer` habla con el chip por el socket `com.apple.uart.bluetooth`, con `read` y `write`? | Sí (T5) |
 | ¿Empareja el DualSense con el filtro? | Sí, al primer intento, y se reconecta solo (T6) |
-| ¿`BTServer` publica el pad como `IOHIDDevice`? | No (T7). T8 busca en el IORegistry si lo publica de otra forma |
-| ¿Llegan los reportes del pad a `BTServer`? ¿`BTServer` le manda algo, como un `GET_REPORT`? | Registro de `ckbtfilter` 0.1.1 (T8) |
-| ¿Se pueden leer los reportes desde el archivo compartido? | `ckhidprobe -s` (T8) |
+| ¿`BTServer` publica el pad como `IOHIDDevice`? | No, ni de otra forma en el IORegistry (T7 y T8) |
+| ¿Llegan los reportes del pad a `BTServer`? ¿`BTServer` le manda algo, como un `GET_REPORT`? | Sí llegan, en reporte simple. `BTServer` no le manda nada (T8) |
+| ¿Se pueden leer los reportes desde el archivo compartido? | Sí, con todos los botones, sticks y gatillos (T8) |
+| ¿Se puede pasar al reporte completo inyectando un `GET_REPORT` del `0x05` en el canal de control? Hay que cuidar la cuenta de paquetes de `BTServer` con el chip | Pendiente |
 | ¿La app puede abrir el `IOHIDDevice`? Instalada en `/Applications` no tiene sandbox; si no basta, un demonio pequeño como root | A5.8 |
 | ¿iOS esconde el teclado en pantalla al creer que hay un teclado? La clase falsa solo se usa al emparejar; el descriptor HID dice GamePad | T6, tocando un campo de texto |
 
@@ -231,7 +234,7 @@ Qué reportar: las tres salidas.
 ## Cómo se decide
 
 - Bluetooth nativo con reporte completo: es el camino. El puente ESP32 queda opcional.
-- Si iOS nunca publica el pad, la app lee el archivo que comparte `ckbtfilter`. Funciona igual con el reporte simple, y el completo necesita inyectar un `GET_REPORT`.
+- Si iOS nunca publica el pad, la app lee el archivo que comparte `ckbtfilter`. Funciona igual con el reporte simple, y el completo necesita inyectar un `GET_REPORT`. **Es lo que pasó (T8): Bluetooth nativo con reporte simple, leído desde el archivo compartido.** El touchpad se cubre por ahora con los controles táctiles (A5.5).
 - Bluetooth nativo solo con reporte simple: también sirve; el touchpad se cubre con los controles táctiles (A5.5).
 - Bluetooth falla y USB funciona: USB con hub es la conexión directa.
 - Fallan los dos: se evalúa BTstack o se retoma el puente ESP32.

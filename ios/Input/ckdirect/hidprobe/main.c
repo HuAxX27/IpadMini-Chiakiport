@@ -288,10 +288,29 @@ static int follow_shared(void)
 	uint8_t report[CK_DS5_SHARED_REPORT_MAX];
 	size_t len;
 	int pad = -1; // unknown, no, yes
+	// Every 5 s: how many reports ckbtfilter wrote (the sequence grows by 2
+	// per report) against how many this loop read, to tell a pad that sends
+	// little from a reader that misses reports.
+	uint32_t window_seq = 0;
+	unsigned window_reads = 0;
+	double window_start = CFAbsoluteTimeGetCurrent();
 	for(;;)
 	{
+		double now = CFAbsoluteTimeGetCurrent();
+		if(now - window_start >= 5.0)
+		{
+			if(window_seq)
+				printf("-- shared: %u reports written by ckbtfilter, %u read here\n", (unsigned)(seq - window_seq) / 2,
+					window_reads);
+			window_seq = seq;
+			window_reads = 0;
+			window_start = now;
+		}
 		if(ck_ds5_shared_read(shared, &seq, report, &len))
 		{
+			window_reads++;
+			if(!window_seq)
+				window_seq = seq;
 			if(len == 0 && pad != 0)
 			{
 				printf("no pad connected\n");
