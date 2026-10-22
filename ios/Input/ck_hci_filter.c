@@ -61,6 +61,8 @@ static void find_class(CKHciFilter *filter)
 		cod_at = 0;
 	filter->addr_at = addr_at;
 	filter->cod_at = cod_at;
+	filter->completed_event = p->type == CK_HCI_EVENT && p->id == CK_HCI_EVENT_NUMBER_OF_COMPLETED_PACKETS
+		&& filter->rewrite && filter->cb.completed;
 }
 
 // One device per event: always for a connection request, only with
@@ -91,6 +93,8 @@ static void start_packet(CKHciFilter *filter, uint8_t type)
 	filter->cod_minor = 0;
 	filter->cod_minor_at = NULL;
 	filter->cod_split = false;
+	filter->completed_event = false;
+	filter->count_low_at = NULL;
 }
 
 static void parse_header(CKHciFilter *filter)
@@ -161,10 +165,32 @@ static void check_class(CKHciFilter *filter)
 	filter->rewrites++;
 }
 
+// Number Of Completed Packets: the number of handles, then a handle (2) and a
+// count (2) for each, little-endian. The high byte of a count has just
+// arrived at payload offset at: hand the count to the caller, and put back
+// what it returns if both bytes are still in the caller's buffer.
+static void check_completed(CKHciFilter *filter, size_t at, uint8_t *high_at)
+{
+	CKHciPacket *p = &filter->packet;
+	if(!filter->count_low_at)
+	{
+		filter->completed_split++;
+		return;
+	}
+	uint16_t handle = (uint16_t)((p->prefix[at - 3] | (p->prefix[at - 2] << 8)) & 0x0fff);
+	uint16_t count = (uint16_t)(p->prefix[at - 1] | (p->prefix[at] << 8));
+	uint16_t now = filter->cb.completed(filter->cb.user, handle, count);
+	if(now == count)
+		return;
+	*filter->count_low_at = p->prefix[at - 1] = (uint8_t)(now & 0xff);
+	*high_at = p->prefix[at] = (uint8_t)(now >> 8);
+}
+
 void ck_hci_filter_feed(CKHciFilter *filter, uint8_t *buf, size_t len)
 {
 	// A pointer into an earlier buffer is no use: that read already returned.
 	filter->cod_minor_at = NULL;
+	filter->count_low_at = NULL;
 
 	for(size_t i = 0; i < len && !filter->lost_sync; i++)
 	{
@@ -201,7 +227,39 @@ void ck_hci_filter_feed(CKHciFilter *filter, uint8_t *buf, size_t len)
 			else if(at == (size_t)filter->cod_at + 1)
 				check_class(filter);
 		}
+		// Counts past the kept prefix are left alone: that is the 24th handle on.
+		if(filter->completed_event && at >= 1 && at < CK_HCI_PREFIX_SIZE && (at - 1) / 4 < p->prefix[0])
+		{
+			if((at - 1) % 4 == 2)
+				filter->count_low_at = buf + i;
+			else if((at - 1) % 4 == 3)
+				check_completed(filter, at, buf + i);
+		}
 		if(filter->payload_have == p->length)
 			end_packet(filter);
 	}
+}
+
+bool ck_hci_filter_between_packets(const CKHciFilter *filter)
+{
+	return filter->header_need == 0 && !filter->lost_sync;
+}
+
+size_t ck_hci_acl_frame(uint8_t *out, size_t size, uint16_t handle, uint8_t flags, uint16_t cid, const uint8_t *data,
+	size_t len)
+{
+	if(len > 0xffff - 4 || size < 9 + len)
+		return 0;
+	size_t acl_len = len + 4;
+	out[0] = CK_HCI_ACL;
+	out[1] = (uint8_t)(handle & 0xff);
+	out[2] = (uint8_t)(((handle >> 8) & 0x0f) | (flags << 4));
+	out[3] = (uint8_t)(acl_len & 0xff);
+	out[4] = (uint8_t)(acl_len >> 8);
+	out[5] = (uint8_t)(len & 0xff);
+	out[6] = (uint8_t)(len >> 8);
+	out[7] = (uint8_t)(cid & 0xff);
+	out[8] = (uint8_t)(cid >> 8);
+	memcpy(out + 9, data, len);
+	return 9 + len;
 }

@@ -42,6 +42,16 @@ extern "C" {
 #define CK_DS5_FEATURE_REPORT_CALIBRATION 0x05
 #define CK_DS5_FEATURE_REPORT_CALIBRATION_SIZE 41
 
+/**
+ * The Bluetooth output report: rumble, lights and more, 78 bytes with its
+ * CRC. Sending any of them also switches the pad to the full input report.
+ */
+#define CK_DS5_REPORT_ID_BT_OUTPUT 0x31
+#define CK_DS5_BT_OUTPUT_SIZE 78
+
+/** The five LEDs under the touchpad, bit 0 on the left. Player 1 is the middle one, as on the PS5. */
+#define CK_DS5_PLAYER_LEDS_1 0x04
+
 /** The DualSense touchpad is 1920 x 1080; Chiaki sends touches in DualShock 4 units, 1920 x 942. */
 #define CK_DS5_TOUCHPAD_HEIGHT 1080
 #define CK_DS5_CHIAKI_TOUCHPAD_HEIGHT 942
@@ -59,6 +69,29 @@ typedef enum ck_ds5_report_kind_t
 	/** Bluetooth report 0x31: same content as USB, CRC-32 checked. */
 	CK_DS5_REPORT_BT_FULL
 } CKDS5ReportKind;
+
+/** What one output report changes. Fields left false keep what the pad had. */
+typedef struct ck_ds5_output_t
+{
+	/** 0 to 15, one more for every report sent to the pad. */
+	uint8_t seq;
+	/**
+	 * Ends the lightbar's blue animation after the pad connects. The pad
+	 * ignores lightbar colours until this has been sent once.
+	 */
+	bool lightbar_fade_out;
+	bool set_lightbar;
+	uint8_t red, green, blue;
+	bool set_player_leds;
+	uint8_t player_leds;
+} CKDS5Output;
+
+/**
+ * Builds a Bluetooth output report with its CRC, ready to go on the
+ * interrupt channel after the 0xa2 HIDP header. The layout follows Linux
+ * (drivers/hid/hid-playstation.c, GPL-2.0); no code is copied.
+ */
+void ck_ds5_bt_output_report(uint8_t report[CK_DS5_BT_OUTPUT_SIZE], const CKDS5Output *output);
 
 /**
  * Parses one input report, starting at its report ID, the way hidraw and
