@@ -16,6 +16,7 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `Dockerfile` | Imagen reproducible con todo lo anterior |
 | `ios9-armv7.cmake` | Archivo de toolchain de CMake: armv7, iOS 9.0, SDK 9.3 |
 | `smoke-test.sh`, `smoke/` | Prueba de humo: compila un binario con Theos y con CMake, y revisa que sirva en el iPad |
+| `hello/` | Hola mundo UIKit (CK Hola), empaquetado como `.deb`: la prueba P1 en el iPad |
 | `core-check.sh`, `core-check/` | Compila el core completo para el iPad y lo enlaza en un ejecutable firmado |
 
 ## Con Docker (recomendado)
@@ -77,6 +78,32 @@ cmake -S . -B build-ios -G Ninja -DCMAKE_TOOLCHAIN_FILE=ios/toolchain/ios9-armv7
 - o no enlaza libSystem.
 
 Después revisa que una API de iOS 10 (`clock_gettime`) **no** enlace: así se sabe que el SDK sigue protegiendo el piso de iOS 9.0. La misma prueba corre en CI (`.github/workflows/ios-toolchain.yml`) con la imagen de Docker y con el script directo, cada vez que cambia esta carpeta.
+
+## Hola mundo (P1)
+
+`hello/` es una app UIKit mínima, CK Hola, que muestra lo que reporta el iPad (versión de iOS, modelo, arquitectura, pantalla, núcleos y memoria), cuánto lleva abierta y cuántas veces se tocó la pantalla. Se instala en `/Applications` como un paquete `.deb` de Cydia, firmada con ldid.
+
+```sh
+docker run --rm -v "$PWD":/work -w /work/ios/toolchain/hello ck-ios-toolchain make package FINALPACKAGE=1
+# deja ios/toolchain/hello/packages/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb
+```
+
+El CI (`ios-toolchain.yml`) también la compila y guarda el `.deb` como artefacto `ckhola-deb`.
+
+Para instalarla en el iPad, con jailbreak y OpenSSH (desde PowerShell en Windows o una terminal en Linux, en la carpeta del `.deb`):
+
+1. Si el iPad se reinició, vuelve a correr Carbon en Safari y revisa que Cydia abra.
+2. Busca la IP del iPad en Ajustes → Wi-Fi → (i) junto a tu red.
+3. Copia e instala, cambiando `IP` por la del iPad:
+
+   ```sh
+   scp -o HostKeyAlgorithms=+ssh-rsa com.thehuax.ckhola_0.1.0_iphoneos-arm.deb root@IP:/tmp/
+   ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "dpkg -i /tmp/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb && su mobile -c uicache"
+   ```
+
+4. Abre CK Hola desde la pantalla de inicio.
+
+Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP /Applications/CKHola.app/CKHola` y guarda lo que imprima; `Killed: 9` apunta a la firma. Para quitarla: `dpkg -r com.thehuax.ckhola && su mobile -c uicache`.
 
 ## Actualizar una versión
 

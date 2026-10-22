@@ -1,0 +1,9 @@
+Package: com.thehuax.ckhola
+Name: CK Hola
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Hola mundo de Chiakiport: prueba que el toolchain de iOS 9 produce una app que abre en el iPad mini 1.
+Maintainer: TheHuAx
+Author: TheHuAx
+Section: Utilities
+Depends: firmware (>= 9.0)

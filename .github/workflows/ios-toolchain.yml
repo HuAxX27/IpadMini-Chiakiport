@@ -3,8 +3,10 @@
 # Checks that the iPad mini 1 toolchain (Theos, clang 11 / ld64-609 and the
 # patched iOS 9.3 SDK, pinned in ios/toolchain/versions.env) still installs and
 # still builds a signed armv7 binary for iOS 9.0, both ways people use it: the
-# Docker image and the plain install script on an Ubuntu host.
-# Runs only when the toolchain itself changes; the .deb build on every PR
+# Docker image and the plain install script on an Ubuntu host. The Docker job
+# also builds the hello world app (ios/toolchain/hello) and keeps its .deb as
+# the "ckhola-deb" artifact.
+# Runs only when the toolchain itself changes; the app's .deb on every PR
 # comes with A1.5.
 
 name: iOS toolchain
@@ -44,6 +46,18 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/work -u "$(id -u):$(id -g)" \
             ck-ios-toolchain ios/toolchain/smoke-test.sh
+
+      - name: Build the hello world .deb
+        run: |
+          docker run --rm -v "$PWD":/work -u "$(id -u):$(id -g)" -w /work/ios/toolchain/hello \
+            ck-ios-toolchain make package FINALPACKAGE=1
+
+      - name: Upload the hello world .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: ckhola-deb
+          path: ios/toolchain/hello/packages/*.deb
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # Job 2: install script on the host
