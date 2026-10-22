@@ -3,6 +3,7 @@
 // A2.6: the plain C half of CKSession (ck_session.h).
 
 #include "ck_session.h"
+#include "ck_video_info.h"
 
 #include <chiaki/thread.h>
 #include <chiaki/time.h>
@@ -146,18 +147,40 @@ static void event_cb(ChiakiEvent *event, void *user)
 	}
 }
 
+/** Says in the log what the console sends, from the header that comes before the frames (A2.7). */
+static void log_video_header(CKSessionCore *session, const CKVideoInfo *info)
+{
+	if(info->codec != CK_VIDEO_CODEC_H264)
+	{
+		CHIAKI_LOGE(session->log, "CKSession: the console sends H.265, which the A5 cannot decode");
+		return;
+	}
+	CHIAKI_LOGI(session->log, "CKSession: the console sends H.264 %s, level %u.%u, %ux%u%s",
+		ck_video_info_profile_name(info), info->level_idc / 10, info->level_idc % 10,
+		(unsigned)info->width, (unsigned)info->height,
+		ck_video_info_a5_decodes(info) ? "" : ", which the A5 cannot decode");
+}
+
 static bool video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	CKSessionCore *session = user;
+	CKVideoInfo info;
+	bool header = ck_video_info_parse(buf, buf_size, &info);
+	if(header)
+		log_video_header(session, &info);
 	uint64_t start = chiaki_time_now_monotonic_us();
 	bool accepted = session->video_cb
 		? session->video_cb(buf, buf_size, frames_lost, frame_recovered, session->video_cb_user)
 		: true;
 	uint64_t spent = chiaki_time_now_monotonic_us() - start;
 	chiaki_mutex_lock(&session->stats_mutex);
-	session->stats.video_frames++;
-	if(accepted)
-		session->stats.video_frames_accepted++;
+	// The header is not a frame.
+	if(!header)
+	{
+		session->stats.video_frames++;
+		if(accepted)
+			session->stats.video_frames_accepted++;
+	}
 	if(frames_lost > 0)
 		session->stats.video_frames_lost += (uint32_t)frames_lost;
 	session->stats.video_bytes += buf_size;

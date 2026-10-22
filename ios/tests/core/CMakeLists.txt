@@ -58,7 +58,7 @@ add_test(NAME chiaki_core_link_check COMMAND core-link-check)
 # the ports a PS5 uses, so the test runs on its own and the suites above never touch the network.
 set(CK_IOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 add_library(ck-consoles STATIC "${CK_IOS_DIR}/Bridge/ck_consoles.c" "${CK_IOS_DIR}/Bridge/ck_registry.c"
-	"${CK_IOS_DIR}/Bridge/ck_session.c" "${CK_IOS_DIR}/cli/ckctl.c")
+	"${CK_IOS_DIR}/Bridge/ck_session.c" "${CK_IOS_DIR}/Bridge/ck_video_info.c" "${CK_IOS_DIR}/cli/ckctl.c")
 target_include_directories(ck-consoles PUBLIC "${CK_IOS_DIR}")
 target_link_libraries(ck-consoles PUBLIC chiaki-lib)
 target_compile_options(ck-consoles PRIVATE -Wall -Wextra -Werror)
@@ -103,3 +103,9 @@ if(CMAKE_CROSSCOMPILING_EMULATOR)
 endif()
 add_test(NAME ck_session COMMAND ck-session-tests)
 set_tests_properties(ck_session PROPERTIES RUN_SERIAL TRUE TIMEOUT 300)
+
+# A2.7: the video header the console sends before the frames (Bridge/ck_video_info.h).
+add_executable(ck-video-info-tests video_info.c)
+target_compile_options(ck-video-info-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-video-info-tests ck-consoles munit)
+add_test(NAME ck_video_info COMMAND ck-video-info-tests)

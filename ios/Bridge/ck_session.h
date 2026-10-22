@@ -56,7 +56,7 @@ typedef struct ck_session_callbacks_t
 /** What went through the session since the previous ck_session_take_stats(). */
 typedef struct ck_session_stats_t
 {
-	/** Video frames handed to the video callback, and how many it took. */
+	/** Video frames handed to the video callback, and how many it took; the profile header is not counted. */
 	uint32_t video_frames;
 	uint32_t video_frames_accepted;
 	/** Frames the core reported lost before the ones it handed over. */
