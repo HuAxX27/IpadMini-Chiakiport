@@ -63,9 +63,13 @@ target_include_directories(ck-consoles PUBLIC "${CK_IOS_DIR}")
 target_link_libraries(ck-consoles PUBLIC chiaki-lib)
 target_compile_options(ck-consoles PRIVATE -Wall -Wextra -Werror)
 
-add_executable(ck-consoles-tests consoles.c "${CK_IOS_DIR}/tests/fakes/fake_ps5.c")
+add_executable(ck-consoles-tests consoles.c "${CK_IOS_DIR}/tests/fakes/fake_ps5.c" xnu_sockaddr.c)
 target_include_directories(ck-consoles-tests PRIVATE "${CK_IOS_DIR}/tests/fakes")
 target_compile_options(ck-consoles-tests PRIVATE -Wall -Wextra -Werror)
+# iOS refuses a socket address whose length is not exactly its family's; xnu_sockaddr.c makes Linux
+# refuse it too, for this code, the core's and the fake's.
+set(CK_XNU_SOCKADDR_WRAP "LINKER:--wrap=bind,--wrap=connect,--wrap=sendto")
+target_link_options(ck-consoles-tests PRIVATE ${CK_XNU_SOCKADDR_WRAP})
 find_package(Threads REQUIRED)
 target_link_libraries(ck-consoles-tests ck-consoles munit Threads::Threads)
 add_test(NAME ck_consoles COMMAND ck-consoles-tests)
