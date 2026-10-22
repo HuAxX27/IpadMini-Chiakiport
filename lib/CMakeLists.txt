@@ -136,7 +136,8 @@ if(WIN32)
 	target_link_libraries(chiaki-lib wsock32 ws2_32 bcrypt iphlpapi)
 endif()
 
-if(APPLE)
+# CoreServices is for Gestalt() in takion.c, which only macOS has.
+if(APPLE AND NOT IOS)
 	target_link_libraries(chiaki-lib "-framework CoreServices")
 endif()
 
