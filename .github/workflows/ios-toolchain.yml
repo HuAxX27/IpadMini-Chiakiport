@@ -7,8 +7,8 @@
 # also builds the hello world app (ios/toolchain/hello) and keeps its .deb as
 # the "ckhola-deb" artifact, and builds mbedTLS and Opus for armv7
 # (build-deps.sh) and keeps them as the "ios-deps-armv7" artifact.
-# Runs only when the toolchain itself changes; the app's .deb on every PR
-# comes with A1.5.
+# Runs only when the toolchain itself changes; ios-ci.yml builds the .deb
+# packages and runs the tests on every PR.
 
 name: iOS toolchain
 
