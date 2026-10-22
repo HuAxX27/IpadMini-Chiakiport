@@ -45,4 +45,5 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 - Rama por actividad del plan: `a<agente>/<id>-<tema>`, por ejemplo `a3/a3.1-annexb-avcc`. Un PR por actividad, con el ID de la actividad en el título.
 - El cuerpo del PR sigue `.github/pull_request_template.md`.
 - Solo TheHuAx, el dueño del repo, prueba en el iPad. Todo PR que cambie lo que se ve o se siente en el dispositivo trae los pasos exactos para probarlo y qué reportar.
+- **Fusión:** cuando el CI de un PR queda en verde y no le queda ningún comentario de revisión pendiente, el agente que lo abrió lo fusiona a `main` sin preguntarle a TheHuAx y borra la rama. Hay dos excepciones. Un PR que cambia lo que se ve o se siente en el iPad espera a que TheHuAx lo pruebe y diga que funciona. Un PR que cambia un contrato espera la aprobación de A0.
 - El trabajo se sigue en issues de GitHub, uno por actividad del plan.
