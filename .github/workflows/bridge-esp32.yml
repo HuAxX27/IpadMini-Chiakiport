@@ -1,0 +1,60 @@
+# ESP32 bridge (bridge/, owner A5): Linux tests of the portable code and the
+# firmware build with ESP-IDF 5.3.6. The build leaves ck_bridge_full.bin, to
+# flash at 0x0, as the "ck_bridge_esp32" artifact of each run.
+
+name: Puente ESP32
+
+on:
+  pull_request:
+    paths:
+      - 'bridge/**'
+      - '.github/workflows/bridge-esp32.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'bridge/**'
+      - '.github/workflows/bridge-esp32.yml'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: bridge tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Portable C tests
+        run: ./bridge/tests/run_tests.sh
+
+      - name: PC tools compile
+        run: python3 -m py_compile bridge/tools/ck_pad_recv.py bridge/tools/ck_pad_send.py
+
+  firmware:
+    name: ESP32 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Fetch Bluepad32 and BTstack
+        run: ./bridge/esp32/deps.sh
+
+      # The official ESP-IDF image; its entrypoint sets up idf.py.
+      - name: Build with ESP-IDF v5.3.6
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work/bridge/esp32 espressif/idf:v5.3.6 \
+            bash -c 'git config --global --add safe.directory "*" && idf.py build && cd build && python -m esptool --chip esp32 merge_bin -o ck_bridge_full.bin @flash_args'
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ck_bridge_esp32
+          path: |
+            bridge/esp32/build/ck_bridge_full.bin
+            bridge/esp32/build/ck_bridge.bin
+            bridge/esp32/build/bootloader/bootloader.bin
+            bridge/esp32/build/partition_table/partition-table.bin
+            bridge/esp32/build/flash_args
+          if-no-files-found: error
