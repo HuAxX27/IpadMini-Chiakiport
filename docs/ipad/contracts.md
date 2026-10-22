@@ -4,7 +4,7 @@ Los cinco contratos fijan cómo se hablan los módulos, para que cada agente pro
 
 | Contrato | Entre | Header | Dueño |
 |---|---|---|---|
-| C1 Sesión | A2 con A3, A4, A5, A6 | `ios/Bridge/CKSession.h` | A2 |
+| C1 Sesión y consolas | A2 con A3, A4, A5, A6 | `ios/Bridge/CKSession.h`, `ios/Bridge/CKConsoles.h` | A2 |
 | C2 Video | A2 con A3 | `ios/Video/CKVideoSink.h` | A3 |
 | C3 Audio | A2 con A4 | `ios/Audio/CKAudioSink.h` | A4 |
 | C4 Entrada | A5 y A6 con A2 | `ios/Input/CKInputSource.h`, `bridge/protocol/ck_pad_packet.h` | A5 |
@@ -12,11 +12,13 @@ Los cinco contratos fijan cómo se hablan los módulos, para que cada agente pro
 
 Cambiar un contrato: PR propio, aprobado por A0, que avisa en el issue de cada agente afectado.
 
-## C1 Sesión
+## C1 Sesión y consolas
 
 `CKSession` envuelve `ChiakiSession`. La interfaz le entrega la IP de la consola, el registro guardado (`ChiakiRegisteredHost`) y los ajustes; el video, el audio y las fuentes de entrada se conectan antes de `-start:`. El delegado recibe todo en el hilo principal.
 
-Descubrimiento y registro de consolas (lo que usan A6.2 y A6.3) los define A2 en `ios/Bridge/CKConsoles.h` durante A2.4, antes de que empiece A6.2.
+`CKConsoles.h` (A2.4) es lo que usan la lista de consolas y el registro (A6.2 y A6.3): búsqueda en la red, un buscador que avisa cada vez que la lista cambia, registro con un resultado que dice qué corregir (PIN, Account ID o red) y despertar a una consola en reposo. Es C portable y se prueba en Linux contra una PS5 falsa. Sus callbacks corren en hilos del core: la capa de Objective-C copia lo que necesita y pasa al hilo principal, sin volver a llamar a la API desde el callback.
+
+`CKConsole.host_id` son los 12 dígitos hexadecimales, en mayúsculas, de la MAC de la consola. Es la misma clave que usa el registro guardado de C5, y con ella la app reconoce qué consola encontrada ya está registrada.
 
 ## C2 Video
 
@@ -58,4 +60,4 @@ Mientras hay un control conectado, el puente repite el estado al menos cada 20 m
 
 - `CKSettings`: resolución (360p, 540p o 720p), fps (30 o 60) y bitrate. Por defecto 540p a 30 fps. No hay campo de códec: siempre H.264.
 - `CKMetrics`: lo que A7 necesita medir, llenado una vez por segundo.
-- Registro guardado (lo escribe A2.5, lo lee A6): un plist en el directorio de la app con un diccionario por consola, indexado por `server_mac` en hexadecimal, con los campos de `ChiakiRegisteredHost` (`target`, `server_nickname`, `server_mac`, `rp_regist_key`, `rp_key_type`, `rp_key`) más la última IP conocida. Nunca se sube al repo.
+- Registro guardado (lo escribe A2.5, lo lee A6): un plist en el directorio de la app con un diccionario por consola, indexado por `server_mac` en hexadecimal con mayúsculas (12 dígitos, igual que `CKConsole.host_id`), con los campos de `ChiakiRegisteredHost` (`target`, `server_nickname`, `server_mac`, `rp_regist_key`, `rp_key_type`, `rp_key`) más la última IP conocida. Nunca se sube al repo.
