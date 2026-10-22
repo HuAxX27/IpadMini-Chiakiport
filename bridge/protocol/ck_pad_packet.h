@@ -21,10 +21,11 @@
 /**
  * Little-endian on the wire (ESP32 and armv7 are both little-endian, so the
  * struct is sent as is). The receiver drops packets whose seq is not newer
- * than the last one, so a late packet never undoes a newer state, except
- * after 500 ms without packets: then it takes any seq, so a bridge that
- * rebooted (seq back at 0) is heard again. While a pad is connected the
- * bridge repeats its state at least every 20 ms.
+ * than the last one it accepted, comparing with wraparound
+ * ((int16_t)(seq - last) > 0), so a late packet never undoes a newer state.
+ * Once 500 ms pass since the last accepted packet it takes the next one
+ * whatever its seq, so a bridge that rebooted (seq back at 0) is heard again.
+ * While a pad is connected the bridge repeats its state at least every 20 ms.
  */
 typedef struct __attribute__((packed)) ck_pad_packet_t
 {
