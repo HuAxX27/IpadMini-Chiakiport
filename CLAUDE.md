@@ -16,7 +16,7 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 | `lib/` | Core de Chiaki, tratado como upstream | A2 |
 | `ios/Bridge/` | Contratos C1 y C5, y la clase `CKSession` | A2 (C5: A0) |
 | `ios/Video/`, `ios/Audio/`, `ios/Input/`, `ios/UI/` | Módulos de la app de iOS | A3, A4, A5, A6 |
-| `ios/toolchain/`, `.github/workflows/ios-*` | Theos, SDK 9.3, CI de iOS | A1 |
+| `ios/toolchain/`, `.github/workflows/ios-*`, `.github/quality/` | Theos, SDK 9.3, CI de iOS y validaciones de calidad | A1 |
 | `bridge/` | Puente ESP32 para el DualSense y su protocolo UDP | A5 |
 | `docs/ipad/` | Plan, contratos, guías para TheHuAx | A0 |
 | `vita/`, `docs/design/`, `tools/` | Código y documentos de VitaRPS5, solo como referencia | Nadie: no se editan |
@@ -39,6 +39,7 @@ Hardware objetivo, que manda en cada decisión: Apple A5 (2 núcleos Cortex-A9 a
 - Contratos en C: `cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c`.
 - App de iOS: la arma A1 (Theos con `iPhoneOS9.3.sdk`). Hasta entonces no hay build de iOS.
 - `./tools/build.sh` es el build de PS Vita en Docker: no lo uses para el iPad.
+- Antes de subir una rama: `.github/quality/check.sh` (secretos, datos de PSN, el nombre del dueño, análisis estático y lint). Corre igual en cada PR; cómo instalar lo que pide y qué hacer si falla está en `.github/quality/README.md`.
 
 ## Ramas, PRs y pruebas en el iPad
 

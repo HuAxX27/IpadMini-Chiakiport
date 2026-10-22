@@ -12,6 +12,8 @@
 #     32-bit ARM under qemu-arm: the contracts, the core (ios/tests/core),
 #     H.264 (A3) and input (A5: the DualSense parser and the BTServer filter).
 #
+# ios-quality.yml adds secrets, private data, static analysis and lint.
+#
 # The toolchain itself (Docker image, install script) is checked by
 # ios-toolchain.yml when it changes. The iOS SDK is downloaded at build time
 # and never uploaded.
