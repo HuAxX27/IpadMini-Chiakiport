@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Builds the core (chiaki-lib) for the iPad mini 1 with ios9-armv7.cmake, LAN
-# only and with mbedTLS, and links the whole archive into one signed armv7
-# executable (core-check/). It proves the core configures, compiles and links
-# against the iOS 9.3 SDK.
+# only, with mbedTLS and Opus, and links the whole archive into one signed
+# armv7 executable (core-check/). It proves the core configures, compiles and
+# links against the iOS 9.3 SDK.
 #
-#   THEOS=/opt/theos ios/toolchain/core-check.sh [build dir] [extra cmake args]
+#   THEOS=/opt/theos [CK_IOS_PREFIX=...] ios/toolchain/core-check.sh [build dir] [extra cmake args]
 #
-# mbedTLS comes from the root CMakeLists' FetchContent (2.28.0) until A1.4
-# builds it; Opus stays off until then too. The build dir defaults to
-# build-ios-core/ at the repo root (git-ignored by build-*).
+# mbedTLS and Opus come from CK_IOS_PREFIX, by default build-ios-deps/prefix,
+# which build-deps.sh fills if it is empty. The build dir defaults to
+# build-ios-core/ at the repo root (both git-ignored by build-*).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +16,11 @@ root="$(cd "$here/../.." && pwd)"
 : "${THEOS:?define THEOS (por ejemplo, export THEOS=/opt/theos)}"
 build="${1:-$root/build-ios-core}"
 shift || true
+prefix="${CK_IOS_PREFIX:-$root/build-ios-deps/prefix}"
+if [ ! -f "$prefix/lib/libopus.a" ] || [ ! -f "$prefix/lib/libmbedtls.a" ]; then
+	"$here/build-deps.sh" "$prefix"
+fi
+prefix="$(cd "$prefix" && pwd)"
 
 git -C "$root" submodule update --init third-party/nanopb third-party/jerasure third-party/gf-complete
 
@@ -23,10 +28,7 @@ generator=()
 command -v ninja >/dev/null && generator=(-G Ninja)
 cmake -S "$here/core-check" -B "$build" "${generator[@]}" \
 	-DCMAKE_TOOLCHAIN_FILE="$here/ios9-armv7.cmake" -DTHEOS="$THEOS" \
-	-DCMAKE_BUILD_TYPE=Release \
-	-DCHIAKI_LIB_MBEDTLS_EXTERNAL_PROJECT=ON \
-	-DCHIAKI_LIB_ENABLE_OPUS=OFF \
-	"$@"
+	-DCK_IOS_PREFIX="$prefix" -DCMAKE_BUILD_TYPE=Release "$@"
 cmake --build "$build"
 
 bin="$THEOS/toolchain/linux/iphone/bin"
