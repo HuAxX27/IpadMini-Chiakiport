@@ -14,7 +14,10 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `install-theos.sh` | Instala Theos, el toolchain y el SDK en `$THEOS` |
 | `fix-sdk93.sh` | Parcha el SDK 9.3 para el linker actual |
 | `Dockerfile` | Imagen reproducible con todo lo anterior |
-| `smoke-test.sh`, `smoke/` | Prueba de humo: compila un binario y revisa que sirva en el iPad |
+| `ios9-armv7.cmake` | Archivo de toolchain de CMake: armv7, iOS 9.0, SDK 9.3 |
+| `smoke-test.sh`, `smoke/` | Prueba de humo: compila un binario con Theos y con CMake, y revisa que sirva en el iPad |
+| `hello/` | Hola mundo UIKit (CK Hola), empaquetado como `.deb`: la prueba P1 en el iPad |
+| `core-check.sh`, `core-check/` | Compila el core completo para el iPad y lo enlaza en un ejecutable firmado |
 
 ## Con Docker (recomendado)
 
@@ -48,9 +51,26 @@ Los stubs `.tbd` del SDK 9.3 de theos/sdks se regeneraron a partir de binarios d
 2. **Faltan `memset`, `memcpy`, `strcmp` y compañía.** En el dispositivo son alias de `_platform_memset` y similares, y el generador de stubs perdió los alias. Clang emite llamadas a `memset` y `memcpy` por su cuenta, así que casi cualquier programa fallaba al enlazar. Se agregan exactamente los 14 alias que implementa la libsystem_platform de iOS 9.3, en libsystem_c, donde los ponen los SDK posteriores de Apple. No se agrega nada de iOS 10: `clock_gettime` debe seguir fallando.
 3. **Advertencias de simulador.** Cada stub lista también i386 y x86_64, y ld64-609 avisa `built for iOS Simulator` una vez por librería en cada enlace. Este SDK es solo para dispositivo, así que se quitan esas dos arquitecturas y las advertencias se van.
 
+## CMake
+
+`ios9-armv7.cmake` es el archivo de toolchain para todo lo que se compila con CMake, empezando por el core:
+
+```sh
+cmake -S . -B build-ios -G Ninja -DCMAKE_TOOLCHAIN_FILE=ios/toolchain/ios9-armv7.cmake
+```
+
+- Toma `THEOS` del entorno o de `-DTHEOS=...` (por defecto `/opt/theos`, como en la imagen).
+- Compila con `--target=armv7-apple-ios9.0`, `-arch armv7`, el SDK 9.3 como sysroot y `-miphoneos-version-min=9.0`. NEON viene activado por defecto en armv7.
+- Todo compila con `-Werror=unguarded-availability`: usar una API más nueva que iOS 9.0 sin revisar su disponibilidad rompe el build.
+- `find_library()` y `find_path()` buscan solo en el SDK y en `CK_IOS_PREFIX` (librerías ya compiladas para armv7, de A1.4), nunca en `/usr` del Linux. Los programas (`python3`, `protoc`) sí se buscan en el Linux.
+- `ck_ios_sign(<target>)` firma un ejecutable con ldid al enlazarlo. iOS no corre nada sin firma, ni siquiera con jailbreak.
+- Usa `llvm-ar` y el `ranlib` de cctools: el `ar` de cctools llama a un `ranlib` con prefijo que el toolchain no trae.
+
+`core-check.sh` compila el core como lo va a usar el iPad (solo red local, mbedTLS, sin holepunch) y enlaza el archivo completo en `ck-core-check`, un ejecutable armv7 firmado. Mientras llegan A1.4 y los parches de A2, baja mbedTLS 2.28.0 con el `FetchContent` del `CMakeLists.txt` raíz y deja Opus apagado.
+
 ## Qué revisa la prueba de humo
 
-`smoke-test.sh` compila `smoke/` con Theos en un directorio temporal, sin dejar nada en el repo, y falla si el binario:
+`smoke-test.sh` compila `smoke/` con Theos y con CMake en un directorio temporal, sin dejar nada en el repo, y falla si alguno de los dos binarios:
 
 - no es solo armv7,
 - no trae `LC_VERSION_MIN_IPHONEOS` 9.0 con SDK 9.3,
@@ -58,6 +78,32 @@ Los stubs `.tbd` del SDK 9.3 de theos/sdks se regeneraron a partir de binarios d
 - o no enlaza libSystem.
 
 Después revisa que una API de iOS 10 (`clock_gettime`) **no** enlace: así se sabe que el SDK sigue protegiendo el piso de iOS 9.0. La misma prueba corre en CI (`.github/workflows/ios-toolchain.yml`) con la imagen de Docker y con el script directo, cada vez que cambia esta carpeta.
+
+## Hola mundo (P1)
+
+`hello/` es una app UIKit mínima, CK Hola, que muestra lo que reporta el iPad (versión de iOS, modelo, arquitectura, pantalla, núcleos y memoria), cuánto lleva abierta y cuántas veces se tocó la pantalla. Se instala en `/Applications` como un paquete `.deb` de Cydia, firmada con ldid.
+
+```sh
+docker run --rm -v "$PWD":/work -w /work/ios/toolchain/hello ck-ios-toolchain make package FINALPACKAGE=1
+# deja ios/toolchain/hello/packages/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb
+```
+
+El CI (`ios-toolchain.yml`) también la compila y guarda el `.deb` como artefacto `ckhola-deb`.
+
+Para instalarla en el iPad, con jailbreak y OpenSSH (desde PowerShell en Windows o una terminal en Linux, en la carpeta del `.deb`):
+
+1. Si el iPad se reinició, vuelve a correr Carbon en Safari y revisa que Cydia abra.
+2. Busca la IP del iPad en Ajustes → Wi-Fi → (i) junto a tu red.
+3. Copia e instala, cambiando `IP` por la del iPad:
+
+   ```sh
+   scp -o HostKeyAlgorithms=+ssh-rsa com.thehuax.ckhola_0.1.0_iphoneos-arm.deb root@IP:/tmp/
+   ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "dpkg -i /tmp/com.thehuax.ckhola_0.1.0_iphoneos-arm.deb && su mobile -c uicache"
+   ```
+
+4. Abre CK Hola desde la pantalla de inicio.
+
+Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP /Applications/CKHola.app/CKHola` y guarda lo que imprima; `Killed: 9` apunta a la firma. Para quitarla: `dpkg -r com.thehuax.ckhola && su mobile -c uicache`.
 
 ## Actualizar una versión
 
