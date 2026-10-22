@@ -17,6 +17,7 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `ios9-armv7.cmake` | Archivo de toolchain de CMake: armv7, iOS 9.0, SDK 9.3 |
 | `smoke-test.sh`, `smoke/` | Prueba de humo: compila un binario con Theos y con CMake, y revisa que sirva en el iPad |
 | `hello/` | Hola mundo UIKit (CK Hola), empaquetado como `.deb`: la prueba P1 en el iPad |
+| `build-deps.sh` | Compila mbedTLS y Opus para armv7 como librerías estáticas |
 | `core-check.sh`, `core-check/` | Compila el core completo para el iPad y lo enlaza en un ejecutable firmado |
 
 ## Con Docker (recomendado)
@@ -62,11 +63,29 @@ cmake -S . -B build-ios -G Ninja -DCMAKE_TOOLCHAIN_FILE=ios/toolchain/ios9-armv7
 - Toma `THEOS` del entorno o de `-DTHEOS=...` (por defecto `/opt/theos`, como en la imagen).
 - Compila con `--target=armv7-apple-ios9.0`, `-arch armv7`, el SDK 9.3 como sysroot y `-miphoneos-version-min=9.0`. NEON viene activado por defecto en armv7.
 - Todo compila con `-Werror=unguarded-availability`: usar una API más nueva que iOS 9.0 sin revisar su disponibilidad rompe el build.
-- `find_library()` y `find_path()` buscan solo en el SDK y en `CK_IOS_PREFIX` (librerías ya compiladas para armv7, de A1.4), nunca en `/usr` del Linux. Los programas (`python3`, `protoc`) sí se buscan en el Linux.
+- `find_library()` y `find_path()` buscan solo en el SDK y en `CK_IOS_PREFIX` (las librerías de `build-deps.sh`), nunca en `/usr` del Linux. Los programas (`python3`, `protoc`) sí se buscan en el Linux. El `include/` de `CK_IOS_PREFIX` va en todas las compilaciones, porque el core incluye `<mbedtls/...>` sin preguntarle a CMake dónde está.
 - `ck_ios_sign(<target>)` firma un ejecutable con ldid al enlazarlo. iOS no corre nada sin firma, ni siquiera con jailbreak.
 - Usa `llvm-ar` y el `ranlib` de cctools: el `ar` de cctools llama a un `ranlib` con prefijo que el toolchain no trae.
 
-`core-check.sh` compila el core como lo va a usar el iPad (solo red local, mbedTLS, sin holepunch) y enlaza el archivo completo en `ck-core-check`, un ejecutable armv7 firmado. Mientras llegan A1.4 y los parches de A2, baja mbedTLS 2.28.0 con el `FetchContent` del `CMakeLists.txt` raíz y deja Opus apagado.
+`core-check.sh` compila el core como lo va a usar el iPad (solo red local, mbedTLS y Opus, sin holepunch) y enlaza el archivo completo en `ck-core-check`, un ejecutable armv7 firmado. Toma mbedTLS y Opus de `CK_IOS_PREFIX` (por defecto `build-ios-deps/prefix`) y, si ahí no están, corre `build-deps.sh` primero.
+
+## Librerías para armv7
+
+`build-deps.sh` compila con `ios9-armv7.cmake` las librerías que el core necesita y que no vienen con él, como librerías estáticas en un prefijo (por defecto `build-ios-deps/prefix`, fuera de git):
+
+- **mbedTLS 2.28 LTS** (`libmbedtls.a`, `libmbedx509.a`, `libmbedcrypto.a`). El core no compila con mbedTLS 3, que volvió privados campos que usa.
+- **Opus** (`libopus.a`), con el código NEON siempre activo. Todos los iPad que corren iOS 9 tienen NEON, y en iOS Opus no puede detectarlo en tiempo de ejecución, así que se compila como si siempre estuviera.
+
+```sh
+docker run --rm -v "$PWD":/work ck-ios-toolchain ios/toolchain/build-deps.sh
+cmake ... -DCMAKE_TOOLCHAIN_FILE=ios/toolchain/ios9-armv7.cmake -DCK_IOS_PREFIX=$PWD/build-ios-deps/prefix
+```
+
+Las versiones y sus commits están en `versions.env`, y el script rechaza un tag que no apunte al commit fijado. Al final revisa que las cuatro librerías sean solo armv7 y que `libopus.a` traiga el código NEON. Las licencias quedan en `share/licenses/` del prefijo.
+
+nanopb, jerasure y gf-complete no se compilan aquí: el CMake del core los compila desde sus submódulos en `third-party/`, con el mismo toolchain.
+
+El CI (`ios-toolchain.yml`) corre `build-deps.sh` en la imagen y guarda el prefijo como artefacto `ios-deps-armv7`: `include/`, `lib/` y `share/licenses/`. Los archivos de pkg-config no van, porque traen la ruta del CI.
 
 ## Qué revisa la prueba de humo
 
@@ -111,4 +130,4 @@ Cambia la URL o el commit en `versions.env` junto con su sha256 (`sha256sum arch
 
 ## Licencias
 
-Theos es GPLv3, el toolchain es LLVM (Apache 2.0 con excepción de LLVM) y cctools/ld64 (APSL 2.0), y ldid es AGPLv3. El SDK está sujeto al acuerdo de Xcode y los SDK de Apple: se descarga al construir, nunca se sube al repo ni se publica como artefacto de CI.
+Theos es GPLv3, el toolchain es LLVM (Apache 2.0 con excepción de LLVM) y cctools/ld64 (APSL 2.0), y ldid es AGPLv3. mbedTLS (Apache 2.0 o GPL 2.0 o posterior) y Opus (BSD de 3 cláusulas) se bajan de sus repos al compilar y sus licencias van con el artefacto `ios-deps-armv7`. El SDK está sujeto al acuerdo de Xcode y los SDK de Apple: se descarga al construir, nunca se sube al repo ni se publica como artefacto de CI.

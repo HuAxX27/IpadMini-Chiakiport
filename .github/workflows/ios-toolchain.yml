@@ -5,7 +5,8 @@
 # still builds a signed armv7 binary for iOS 9.0, both ways people use it: the
 # Docker image and the plain install script on an Ubuntu host. The Docker job
 # also builds the hello world app (ios/toolchain/hello) and keeps its .deb as
-# the "ckhola-deb" artifact.
+# the "ckhola-deb" artifact, and builds mbedTLS and Opus for armv7
+# (build-deps.sh) and keeps them as the "ios-deps-armv7" artifact.
 # Runs only when the toolchain itself changes; the app's .deb on every PR
 # comes with A1.5.
 
@@ -57,6 +58,24 @@ jobs:
         with:
           name: ckhola-deb
           path: ios/toolchain/hello/packages/*.deb
+          if-no-files-found: error
+
+      - name: Build mbedTLS and Opus for armv7
+        run: |
+          docker run --rm -v "$PWD":/work -u "$(id -u):$(id -g)" \
+            ck-ios-toolchain ios/toolchain/build-deps.sh
+
+      # Headers, static libraries and licenses. The pkg-config files are left
+      # out: they hold the CI's absolute path.
+      - name: Upload the armv7 libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-deps-armv7
+          path: |
+            build-ios-deps/prefix/include
+            build-ios-deps/prefix/lib
+            build-ios-deps/prefix/share
+            !build-ios-deps/prefix/lib/pkgconfig
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

@@ -7,11 +7,13 @@
 #   THEOS          where install-theos.sh put Theos (default /opt/theos, as in
 #                  the Docker image).
 #   CK_IOS_PREFIX  optional prefix with libraries already built for armv7
-#                  (A1.4). find_library() and find_path() look there and in
-#                  the SDK, never in the Linux host's /usr.
+#                  (build-deps.sh). find_library() and find_path() look there
+#                  and in the SDK, never in the Linux host's /usr, and its
+#                  include/ is on every compile's include path.
 #
 # Every target compiles with -Werror=unguarded-availability: calling an API
-# newer than iOS 9.0 without an availability check is a build error.
+# newer than iOS 9.0 without an availability check is a build error. C code
+# also gets -Werror=implicit-function-declaration.
 #
 # ck_ios_sign(<target>) signs an executable with ldid after linking, which
 # iOS needs to run it even on a jailbroken device.
@@ -60,7 +62,10 @@ set(CMAKE_INSTALL_NAME_TOOL "${CK_IOS_BIN}/install_name_tool" CACHE FILEPATH "" 
 set(CMAKE_LIPO "${CK_IOS_BIN}/lipo" CACHE FILEPATH "" FORCE)
 set(CK_IOS_LDID "${CK_IOS_BIN}/ldid")
 
-set(CMAKE_C_FLAGS_INIT "-Werror=unguarded-availability")
+# An implicitly declared function returns int, and on armv7 a float result
+# comes back in a core register, so the caller would read garbage: make it an
+# error too.
+set(CMAKE_C_FLAGS_INIT "-Werror=unguarded-availability -Werror=implicit-function-declaration")
 set(CMAKE_CXX_FLAGS_INIT "-Werror=unguarded-availability")
 # Plain executables, not .app bundles; the app itself is built by Theos.
 set(CMAKE_MACOSX_BUNDLE OFF)
@@ -71,6 +76,10 @@ set(CMAKE_FIND_ROOT_PATH "${CK_IOS_SDK}")
 if(CK_IOS_PREFIX)
 	list(APPEND CMAKE_FIND_ROOT_PATH "${CK_IOS_PREFIX}")
 	set(ENV{PKG_CONFIG_LIBDIR} "${CK_IOS_PREFIX}/lib/pkgconfig")
+	# The core includes <mbedtls/...> without asking CMake where it lives.
+	foreach(lang C CXX OBJC OBJCXX)
+		set(CMAKE_${lang}_STANDARD_INCLUDE_DIRECTORIES "${CK_IOS_PREFIX}/include")
+	endforeach()
 else()
 	set(ENV{PKG_CONFIG_LIBDIR} "")
 endif()
