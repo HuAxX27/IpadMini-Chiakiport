@@ -2,11 +2,16 @@
 
 // A2.4: Bridge/CKConsoles.h and ckctl against the fake PS5 of
 // ios/tests/fakes/fake_ps5.h, on 127.0.0.1. The fake binds the ports a PS5
-// uses (9302 and 9295), so these tests run one at a time.
+// uses (9302 and 9295), so these tests run one at a time. A2.5: ckctl with
+// the saved registrations, each test with its own file in a temporary folder.
+
+// nftw() and mkdtemp(), for the temporary folders.
+#define _XOPEN_SOURCE 700
 
 #include <munit.h>
 
 #include "Bridge/CKConsoles.h"
+#include "Bridge/ck_registry.h"
 #include "cli/ckctl.h"
 #include "fake_ps5.h"
 
@@ -15,13 +20,21 @@
 #include <chiaki/thread.h>
 #include <chiaki/time.h>
 
+#include <ftw.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define HOST "127.0.0.1"
+/** Loopback addresses where nothing listens. */
+#define NOBODY "127.0.0.2"
+#define NOBODY_ELSE "127.0.0.3"
 
 static ChiakiLog test_log;
+/** Where the ckctl tests keep their registration files; made in main(). */
+static char store_dir[256];
 
 static void *start_fake(FakePs5 *ps5)
 {
@@ -585,12 +598,79 @@ static void assert_contains(const char *haystack, const char *needle)
 		munit_errorf("\"%s\" not in:\n%s", needle, haystack);
 }
 
+static void assert_not_contains(const char *haystack, const char *needle)
+{
+	if(strstr(haystack, needle))
+		munit_errorf("\"%s\" in:\n%s", needle, haystack);
+}
+
+/** A registration file for one test, which does not exist yet. */
+static void fresh_store(char *path, size_t size, const char *name)
+{
+	munit_assert_int(snprintf(path, size, "%s/%s.plist", store_dir, name), <, (int)size);
+	unlink(path);
+}
+
+/** What ckctl regist saves for the fake PS5. */
+static ChiakiRegisteredHost fake_registration(void)
+{
+	ChiakiRegisteredHost host;
+	memset(&host, 0, sizeof(host));
+	host.target = CHIAKI_TARGET_PS5_1;
+	static const uint8_t mac[6] = { 0x0a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f };
+	memcpy(host.server_mac, mac, sizeof(mac));
+	snprintf(host.server_nickname, sizeof(host.server_nickname), "%s", FAKE_PS5_NAME);
+	memcpy(host.rp_regist_key, FAKE_PS5_REGIST_KEY, strlen(FAKE_PS5_REGIST_KEY));
+	host.rp_key_type = 2;
+	memset(host.rp_key, FAKE_PS5_RP_KEY_BYTE, sizeof(host.rp_key));
+	return host;
+}
+
+/** Another console, registered but not on the network. */
+static ChiakiRegisteredHost other_registration(void)
+{
+	ChiakiRegisteredHost host = fake_registration();
+	host.server_mac[5] = 0x60;
+	snprintf(host.server_nickname, sizeof(host.server_nickname), "%s", "Cuarto");
+	memcpy(host.rp_regist_key, "00ff00ff", 8);
+	return host;
+}
+
+/** Saves the fake PS5's registration, last seen at last_host, and the other console when other. */
+static void write_store(const char *path, const char *last_host, bool other)
+{
+	CKRegistry registry;
+	memset(&registry, 0, sizeof(registry));
+	ChiakiRegisteredHost host = fake_registration();
+	munit_assert_int(ck_registry_put(&registry, &host, last_host), ==, CHIAKI_ERR_SUCCESS);
+	if(other)
+	{
+		host = other_registration();
+		munit_assert_int(ck_registry_put(&registry, &host, NOBODY_ELSE), ==, CHIAKI_ERR_SUCCESS);
+	}
+	munit_assert_int(ck_registry_save(&registry, path), ==, CHIAKI_ERR_SUCCESS);
+}
+
+/** The fake PS5's entry in the file at path. */
+static CKRegistryEntry read_fake_entry(const char *path, size_t *count)
+{
+	CKRegistry registry;
+	munit_assert_int(ck_registry_load(&registry, path), ==, CHIAKI_ERR_SUCCESS);
+	CKRegistryEntry *entry = ck_registry_find_host_id(&registry, FAKE_PS5_HOST_ID);
+	munit_assert_not_null(entry);
+	if(count)
+		*count = registry.count;
+	return *entry;
+}
+
 static MunitResult test_ckctl_discover(const MunitParameter params[], void *fixture)
 {
 	(void)params;
 	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "discover");
 	CkctlRun run;
-	ckctl(&run, "discover", "-H", HOST, NULL);
+	ckctl(&run, "discover", "-H", HOST, "-s", store, NULL);
 	fake_ps5_stop(ps5);
 	munit_assert_int(run.code, ==, 0);
 	assert_contains(run.out, HOST);
@@ -598,6 +678,48 @@ static MunitResult test_ckctl_discover(const MunitParameter params[], void *fixt
 	assert_contains(run.out, "en reposo");
 	assert_contains(run.out, FAKE_PS5_NAME);
 	assert_contains(run.out, "id " FAKE_PS5_HOST_ID_UPPER);
+	assert_not_contains(run.out, "registrada");
+	// Nothing registered, nothing to remember.
+	munit_assert_int(access(store, F_OK), !=, 0);
+	return MUNIT_OK;
+}
+
+/** discover marks a registered console and remembers where it answered. */
+static MunitResult test_ckctl_discover_registered(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "discover_registered");
+	write_store(store, NOBODY, true);
+	CkctlRun run;
+	ckctl(&run, "discover", "-H", HOST, "-s", store, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "id " FAKE_PS5_HOST_ID_UPPER "  fw " FAKE_PS5_SYSTEM_VERSION "  registrada");
+	size_t count;
+	CKRegistryEntry entry = read_fake_entry(store, &count);
+	munit_assert_string_equal(entry.last_host, HOST);
+	munit_assert_size(count, ==, 2);
+
+	// A file it cannot read is left alone, and discover still works.
+	static const char garbage[] = "no soy un plist";
+	FILE *f = fopen(store, "wb");
+	munit_assert_not_null(f);
+	fputs(garbage, f);
+	fclose(f);
+	start_fake(ps5);
+	ckctl(&run, "discover", "-H", HOST, "-s", store, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, FAKE_PS5_NAME);
+	assert_contains(run.err, "aviso: no pude leer los registros");
+	f = fopen(store, "rb");
+	munit_assert_not_null(f);
+	char back[64] = { 0 };
+	munit_assert_size(fread(back, 1, sizeof(back) - 1, f), ==, strlen(garbage));
+	fclose(f);
+	munit_assert_string_equal(back, garbage);
 	return MUNIT_OK;
 }
 
@@ -621,16 +743,70 @@ static MunitResult test_ckctl_regist(const MunitParameter params[], void *fixtur
 	FakePs5 *ps5 = start_fake(fixture);
 	char account[16];
 	chiaki_base64_encode(ps5->psn_account_id, sizeof(ps5->psn_account_id), account, sizeof(account));
+	char store[512];
+	fresh_store(store, sizeof(store), "regist");
 	CkctlRun run;
-	ckctl(&run, "regist", "-H", HOST, "-a", account, "-p", "1234 5678", NULL);
-	fake_ps5_stop(ps5);
+	ckctl(&run, "regist", "-H", HOST, "-a", account, "-p", "1234 5678", "-s", store, NULL);
 	munit_assert_int(run.code, ==, 0);
 	assert_contains(run.out, "Registrando con " FAKE_PS5_NAME " (PS5, en reposo)");
 	assert_contains(run.out, "Registro listo.");
+	char saved[700];
+	snprintf(saved, sizeof(saved), "Guardé el registro de " FAKE_PS5_NAME " (id " FAKE_PS5_HOST_ID_UPPER ") en %s.", store);
+	assert_contains(run.out, saved);
+	assert_contains(run.out, "ckctl wakeup -c " FAKE_PS5_HOST_ID_UPPER);
+	// The keys are in the file, not on the screen.
+	assert_not_contains(run.out, FAKE_PS5_REGIST_KEY);
+	assert_not_contains(run.out, "rp_key");
+
+	size_t count;
+	CKRegistryEntry entry = read_fake_entry(store, &count);
+	munit_assert_size(count, ==, 1);
+	ChiakiRegisteredHost expected = fake_registration();
+	munit_assert_memory_equal(sizeof(expected), &entry.host, &expected);
+	munit_assert_string_equal(entry.last_host, HOST);
+
+	// Registering again replaces it.
+	ckctl(&run, "regist", "-H", HOST, "-a", account, "-p", "12345678", "-s", store, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Reemplacé el registro de " FAKE_PS5_NAME);
+	read_fake_entry(store, &count);
+	munit_assert_size(count, ==, 1);
+	return MUNIT_OK;
+}
+
+/** With a store it cannot read, regist shows the keys instead and leaves the file alone. */
+static MunitResult test_ckctl_regist_store_broken(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	char account[16];
+	chiaki_base64_encode(ps5->psn_account_id, sizeof(ps5->psn_account_id), account, sizeof(account));
+	char store[512];
+	fresh_store(store, sizeof(store), "regist_store_broken");
+	static const char garbage[] = "<plist><dict><key>roto";
+	FILE *f = fopen(store, "wb");
+	munit_assert_not_null(f);
+	fputs(garbage, f);
+	fclose(f);
+	CkctlRun run;
+	ckctl(&run, "regist", "-H", HOST, "-a", account, "-p", "12345678", "-s", store, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "no pude leer los registros de");
+	assert_contains(run.err, "no lo toco");
+	assert_contains(run.out, "Registro listo.");
+	assert_contains(run.out, "No quedó guardado.");
 	assert_contains(run.out, "target=1000100");
 	assert_contains(run.out, "server_mac=0a1b2c3d4e5f");
 	assert_contains(run.out, "rp_regist_key=" FAKE_PS5_REGIST_KEY);
 	assert_contains(run.out, "rp_key=" FAKE_PS5_RP_KEY_HEX);
+	f = fopen(store, "rb");
+	munit_assert_not_null(f);
+	char back[64] = { 0 };
+	munit_assert_size(fread(back, 1, sizeof(back) - 1, f), ==, strlen(garbage));
+	fclose(f);
+	munit_assert_string_equal(back, garbage);
 	return MUNIT_OK;
 }
 
@@ -638,12 +814,15 @@ static MunitResult test_ckctl_regist_wrong_pin(const MunitParameter params[], vo
 {
 	(void)params;
 	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "regist_wrong_pin");
 	CkctlRun run;
-	ckctl(&run, "regist", "-H", HOST, "-a", "1070935361496367905", "-p", "11112222", NULL);
+	ckctl(&run, "regist", "-H", HOST, "-a", "1070935361496367905", "-p", "11112222", "-s", store, NULL);
 	fake_ps5_stop(ps5);
 	munit_assert_int(run.code, ==, 1);
 	assert_contains(run.err, "rechazó el PIN");
 	assert_contains(run.err, "(HTTP 403, razón 0x80108b09)");
+	munit_assert_int(access(store, F_OK), !=, 0);
 	return MUNIT_OK;
 }
 
@@ -695,6 +874,167 @@ static MunitResult test_ckctl_wakeup_wrong_key(const MunitParameter params[], vo
 	return MUNIT_OK;
 }
 
+/** wakeup with the saved registration: no key to type, the address it was last seen at. */
+static MunitResult test_ckctl_wakeup_store(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "wakeup_store");
+	write_store(store, HOST, false);
+	CkctlRun run;
+	ckctl(&run, "wakeup", "-s", store, "-w", "10", NULL);
+	int wakeups = fake_ps5_wakeups(ps5);
+	pthread_mutex_lock(&ps5->mutex);
+	uint64_t credential = ps5->last_credential;
+	pthread_mutex_unlock(&ps5->mutex);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Mandé la señal para despertar a " HOST ".");
+	assert_contains(run.out, FAKE_PS5_NAME " se encendió en");
+	munit_assert_int(wakeups, ==, 1);
+	munit_assert_uint64(credential, ==, FAKE_PS5_CREDENTIAL);
+
+	// On now: nothing to send.
+	ckctl(&run, "wakeup", "-s", store, NULL);
+	wakeups = fake_ps5_wakeups(ps5);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, FAKE_PS5_NAME " ya está encendida.");
+	munit_assert_int(wakeups, ==, 1);
+	return MUNIT_OK;
+}
+
+/** The console is not at its last address any more: wakeup searches for it and remembers the new one. */
+static MunitResult test_ckctl_wakeup_store_moved(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "wakeup_store_moved");
+	write_store(store, NOBODY, false);
+	CkctlRun run;
+	// -b stands for the network's broadcast address, which never reaches 127.0.0.1.
+	ckctl(&run, "wakeup", "-s", store, "-b", HOST, NULL);
+	bool woken = wait_for_wakeups(ps5, 1, 2000);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Mandé la señal para despertar a " HOST ".");
+	munit_assert_true(woken);
+	CKRegistryEntry entry = read_fake_entry(store, NULL);
+	munit_assert_string_equal(entry.last_host, HOST);
+	return MUNIT_OK;
+}
+
+/** Nowhere to be found: with a last address the signal still goes there; without one, ckctl asks for -H. */
+static MunitResult test_ckctl_wakeup_store_not_found(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = fixture;
+	ps5->discovery_silent = true;
+	start_fake(ps5);
+	char store[512];
+	fresh_store(store, sizeof(store), "wakeup_store_not_found");
+	write_store(store, HOST, false);
+	CkctlRun run;
+	ckctl(&run, "wakeup", "-s", store, "-b", NOBODY, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, FAKE_PS5_NAME " no contestó la búsqueda; mando la señal a " HOST " de todos modos.");
+
+	write_store(store, NULL, false);
+	ckctl(&run, "wakeup", "-s", store, "-b", NOBODY, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "no encuentro a " FAKE_PS5_NAME " en la red y no sé su IP; pásala con -H");
+	return MUNIT_OK;
+}
+
+/** With two consoles registered, wakeup needs to be told which. */
+static MunitResult test_ckctl_wakeup_store_choose(const MunitParameter params[], void *fixture)
+{
+	(void)params;
+	FakePs5 *ps5 = start_fake(fixture);
+	char store[512];
+	fresh_store(store, sizeof(store), "wakeup_store_choose");
+	CkctlRun run;
+	ckctl(&run, "wakeup", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "no hay consolas registradas en");
+
+	write_store(store, HOST, true);
+	ckctl(&run, "wakeup", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "hay 2 consolas registradas: elige una con -c");
+	ckctl(&run, "wakeup", "-s", store, "-c", "Nadie", NULL);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "ninguna consola registrada se llama, tiene el id o la IP \"Nadie\"");
+	munit_assert_int(fake_ps5_wakeups(ps5), ==, 0);
+
+	// By name, by id in any case, and by the address it was last seen at.
+	ckctl(&run, "wakeup", "-s", store, "-c", FAKE_PS5_NAME, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Mandé la señal para despertar a " HOST ".");
+	munit_assert_true(wait_for_wakeups(ps5, 1, 2000));
+	pthread_mutex_lock(&ps5->mutex);
+	ps5->state = CHIAKI_DISCOVERY_HOST_STATE_STANDBY;
+	pthread_mutex_unlock(&ps5->mutex);
+	ckctl(&run, "wakeup", "-s", store, "-c", FAKE_PS5_HOST_ID, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Mandé la señal para despertar a " HOST ".");
+	munit_assert_true(wait_for_wakeups(ps5, 2, 2000));
+	ckctl(&run, "wakeup", "-s", store, "-H", HOST, NULL);
+	fake_ps5_stop(ps5);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, FAKE_PS5_NAME " ya está encendida.");
+	return MUNIT_OK;
+}
+
+static MunitResult test_ckctl_list_forget(const MunitParameter params[], void *user)
+{
+	(void)params;
+	(void)user;
+	char store[512];
+	fresh_store(store, sizeof(store), "list_forget");
+	CkctlRun run;
+	ckctl(&run, "list", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "No hay consolas registradas en");
+
+	write_store(store, NULL, true);
+	ckctl(&run, "list", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "(sin IP)         PS5  " FAKE_PS5_NAME "  id " FAKE_PS5_HOST_ID_UPPER "\n");
+	assert_contains(run.out, NOBODY_ELSE "        PS5  Cuarto  id 0A1B2C3D4E60\n");
+	assert_not_contains(run.out, FAKE_PS5_REGIST_KEY);
+
+	ckctl(&run, "forget", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 2);
+	ckctl(&run, "forget", "-s", store, "-c", "Nadie", NULL);
+	munit_assert_int(run.code, ==, 1);
+	ckctl(&run, "forget", "-s", store, "-c", FAKE_PS5_HOST_ID, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "Borré el registro de " FAKE_PS5_NAME " (id " FAKE_PS5_HOST_ID_UPPER ").");
+	ckctl(&run, "list", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_not_contains(run.out, FAKE_PS5_NAME);
+	assert_contains(run.out, "Cuarto");
+	ckctl(&run, "forget", "-s", store, "-c", "Cuarto", NULL);
+	munit_assert_int(run.code, ==, 0);
+	ckctl(&run, "list", "-s", store, NULL);
+	assert_contains(run.out, "No hay consolas registradas en");
+
+	// A file that is not a registry is not listed, and not saved over.
+	FILE *f = fopen(store, "wb");
+	munit_assert_not_null(f);
+	fputs("no soy un plist", f);
+	fclose(f);
+	ckctl(&run, "list", "-s", store, NULL);
+	munit_assert_int(run.code, ==, 1);
+	assert_contains(run.err, "no es un archivo de registros o está dañado");
+	ckctl(&run, "forget", "-s", store, "-c", "Cuarto", NULL);
+	munit_assert_int(run.code, ==, 1);
+	return MUNIT_OK;
+}
+
 static MunitResult test_ckctl_usage(const MunitParameter params[], void *user)
 {
 	(void)params;
@@ -726,7 +1066,25 @@ static MunitResult test_ckctl_usage(const MunitParameter params[], void *user)
 	munit_assert_int(run.code, ==, 2);
 	ckctl(&run, "discover", "--lento", NULL);
 	munit_assert_int(run.code, ==, 2);
+	ckctl(&run, "wakeup", "-k", FAKE_PS5_REGIST_KEY, NULL);
+	munit_assert_int(run.code, ==, 2);
+	assert_contains(run.err, "wakeup con -k pide -H");
+	ckctl(&run, "forget", NULL);
+	munit_assert_int(run.code, ==, 2);
+	ckctl(&run, "list", "-s", NULL);
+	munit_assert_int(run.code, ==, 2);
+	ckctl(&run, "help", NULL);
+	munit_assert_int(run.code, ==, 0);
+	assert_contains(run.out, "ckctl forget -c CONSOLA");
 	return MUNIT_OK;
+}
+
+static int remove_one(const char *path, const struct stat *st, int type, struct FTW *ftw)
+{
+	(void)st;
+	(void)type;
+	(void)ftw;
+	return remove(path);
 }
 
 #define TEST(name, fn) { name, fn, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
@@ -756,11 +1114,18 @@ static MunitTest tests[] = {
 	FAKE_TEST("/wakeup", test_wakeup),
 	FAKE_TEST("/ckctl_discover", test_ckctl_discover),
 	FAKE_TEST("/ckctl_discover_none", test_ckctl_discover_none),
+	FAKE_TEST("/ckctl_discover_registered", test_ckctl_discover_registered),
 	FAKE_TEST("/ckctl_regist", test_ckctl_regist),
+	FAKE_TEST("/ckctl_regist_store_broken", test_ckctl_regist_store_broken),
 	FAKE_TEST("/ckctl_regist_wrong_pin", test_ckctl_regist_wrong_pin),
 	FAKE_TEST("/ckctl_wakeup", test_ckctl_wakeup),
 	FAKE_TEST("/ckctl_wakeup_already_on", test_ckctl_wakeup_already_on),
 	FAKE_TEST("/ckctl_wakeup_wrong_key", test_ckctl_wakeup_wrong_key),
+	FAKE_TEST("/ckctl_wakeup_store", test_ckctl_wakeup_store),
+	FAKE_TEST("/ckctl_wakeup_store_moved", test_ckctl_wakeup_store_moved),
+	FAKE_TEST("/ckctl_wakeup_store_not_found", test_ckctl_wakeup_store_not_found),
+	FAKE_TEST("/ckctl_wakeup_store_choose", test_ckctl_wakeup_store_choose),
+	TEST("/ckctl_list_forget", test_ckctl_list_forget),
 	TEST("/ckctl_usage", test_ckctl_usage),
 	{ NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
 };
@@ -774,5 +1139,11 @@ int main(int argc, char *argv[])
 	// Silent: the failing registrations are expected to log errors. -v in
 	// ckctl's tests is not used for the same reason.
 	chiaki_log_init(&test_log, 0, NULL, NULL);
-	return munit_suite_main(&suite, NULL, argc, argv);
+	const char *tmp = getenv("TMPDIR");
+	snprintf(store_dir, sizeof(store_dir), "%s/ck-consoles-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+	if(!mkdtemp(store_dir))
+		return 1;
+	int r = munit_suite_main(&suite, NULL, argc, argv);
+	nftw(store_dir, remove_one, 16, FTW_DEPTH | FTW_PHYS);
+	return r;
 }

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// ckctl (A2.4): the command line face of Bridge/CKConsoles.h. See README.md.
+// ckctl (A2.4, A2.5): the command line face of Bridge/CKConsoles.h, with the
+// registrations saved through Bridge/ck_registry.h. See README.md.
 
 #include "ckctl.h"
 
 #include "Bridge/CKConsoles.h"
+#include "Bridge/ck_registry.h"
 
 #include <chiaki/time.h>
 
@@ -18,20 +20,32 @@
 #define PROBE_TIMEOUT_MS 1000
 #define WAKE_POLL_MS 1000
 #define WAKE_RESEND_MS 5000
+/** server_nickname and its NUL: it is NUL-padded, not always terminated. */
+#define NAME_SIZE (sizeof(((ChiakiRegisteredHost *)NULL)->server_nickname) + 1)
 
 static const char usage[] =
 	"Uso:\n"
 	"  ckctl [-v] discover [-H IP] [-t SEGUNDOS]\n"
-	"      Busca consolas en la red (o solo la de IP) durante SEGUNDOS (2).\n"
+	"      Busca consolas en la red (o solo la de IP) durante SEGUNDOS (2) y marca\n"
+	"      las registradas.\n"
 	"  ckctl [-v] regist -H IP -a ACCOUNT_ID -p PIN\n"
-	"      Registra el iPad con la consola. ACCOUNT_ID va en base64 o en decimal;\n"
-	"      el PIN es el de 8 cifras que muestra la consola en Ajustes > Sistema >\n"
-	"      Remote Play > Vincular dispositivo.\n"
+	"      Registra el iPad con la consola y guarda el registro. ACCOUNT_ID va en\n"
+	"      base64 o en decimal; el PIN es el de 8 cifras que muestra la consola en\n"
+	"      Ajustes > Sistema > Remote Play > Vincular dispositivo.\n"
+	"  ckctl [-v] wakeup [-c CONSOLA] [-H IP] [-b DIRECCIÓN] [-w SEGUNDOS]\n"
+	"      Despierta a una consola registrada que está en reposo. CONSOLA es su\n"
+	"      nombre, su id o su IP; sin -c, la única registrada. La busca en IP, o en\n"
+	"      su última IP, y si no está ahí, en toda la red (o en DIRECCIÓN). Con -w\n"
+	"      espera hasta SEGUNDOS a que se encienda.\n"
 	"  ckctl [-v] wakeup -H IP -k LLAVE [-w SEGUNDOS] [--ps4]\n"
-	"      Despierta a la consola en reposo con la llave de registro (rp_regist_key\n"
-	"      de ckctl regist). Con -w espera hasta SEGUNDOS a que se encienda.\n"
+	"      Lo mismo sin el registro guardado, con su llave (rp_regist_key).\n"
+	"  ckctl list\n"
+	"      Muestra las consolas registradas.\n"
+	"  ckctl forget -c CONSOLA\n"
+	"      Borra el registro de una consola.\n"
 	"\n"
-	"  -v, --verbose   muestra el registro del core en la salida de errores\n";
+	"  -s, --store RUTA  el archivo de los registros (" CK_REGISTRY_DEFAULT_PATH ")\n"
+	"  -v, --verbose     muestra el registro del core en la salida de errores\n";
 
 typedef struct ckctl_t
 {
@@ -42,6 +56,9 @@ typedef struct ckctl_t
 	const char *account;
 	const char *pin;
 	const char *key;
+	const char *console;
+	const char *store;
+	const char *search;
 	long seconds;
 	bool seconds_set;
 	bool ps4;
@@ -80,6 +97,12 @@ static int parse_options(Ckctl *ctl, int argc, char **argv)
 			value = &ctl->pin;
 		else if(!strcmp(arg, "-k") || !strcmp(arg, "--key"))
 			value = &ctl->key;
+		else if(!strcmp(arg, "-c") || !strcmp(arg, "--console"))
+			value = &ctl->console;
+		else if(!strcmp(arg, "-s") || !strcmp(arg, "--store"))
+			value = &ctl->store;
+		else if(!strcmp(arg, "-b") || !strcmp(arg, "--broadcast"))
+			value = &ctl->search;
 		else if(strcmp(arg, "-t") && strcmp(arg, "--timeout") && strcmp(arg, "-w") && strcmp(arg, "--wait"))
 		{
 			fprintf(ctl->err, "ckctl: opción desconocida: %s\n\n%s", arg, usage);
@@ -109,22 +132,83 @@ static int parse_options(Ckctl *ctl, int argc, char **argv)
 	return 0;
 }
 
-static void print_console(FILE *out, const CKConsole *console)
+static void print_console(FILE *out, const CKConsole *console, bool registered)
 {
 	fprintf(out, "%-15s  %s  %-11s  %s  id %s  fw %s", console->addr, console->ps5 ? "PS5" : "PS4",
 		ck_console_state_string(console->state), console->name[0] ? console->name : "(sin nombre)",
 		console->host_id[0] ? console->host_id : "?", console->system_version[0] ? console->system_version : "?");
+	if(registered)
+		fputs("  registrada", out);
 	if(console->running_app_name[0])
 		fprintf(out, "  jugando %s", console->running_app_name);
 	fputc('\n', out);
 }
 
-/** The console at ctl->host, if it answers a search within PROBE_TIMEOUT_MS. */
-static bool probe(Ckctl *ctl, CKConsole *console)
+/** The console at host, if it answers a search within PROBE_TIMEOUT_MS. */
+static bool probe(Ckctl *ctl, const char *host, CKConsole *console)
 {
 	size_t count = 0;
-	ChiakiErrorCode err = ck_consoles_discover(&ctl->log, ctl->host, PROBE_TIMEOUT_MS, console, 1, &count);
+	ChiakiErrorCode err = ck_consoles_discover(&ctl->log, host, PROBE_TIMEOUT_MS, console, 1, &count);
 	return err == CHIAKI_ERR_SUCCESS && count > 0;
+}
+
+// ---------------------------------------------------------------------------
+// The saved registrations
+// ---------------------------------------------------------------------------
+
+static const char *store_path(const Ckctl *ctl)
+{
+	return ctl->store ? ctl->store : CK_REGISTRY_DEFAULT_PATH;
+}
+
+/** Why the store could not be read, after "no pude leer los registros de PATH: ". */
+static const char *load_error_string(ChiakiErrorCode err)
+{
+	switch(err)
+	{
+		case CHIAKI_ERR_INVALID_DATA:
+			return "no es un archivo de registros o está dañado, y no lo toco";
+		case CHIAKI_ERR_OVERFLOW:
+			return "tiene más consolas de las que caben, y no lo toco";
+		default:
+			return "no se puede abrir";
+	}
+}
+
+/** Loads the store into registry, or says why not and returns false. */
+static bool load_store(Ckctl *ctl, CKRegistry *registry)
+{
+	ChiakiErrorCode err = ck_registry_load(registry, store_path(ctl));
+	if(err == CHIAKI_ERR_SUCCESS)
+		return true;
+	fprintf(ctl->err, "ckctl: no pude leer los registros de %s: %s\n", store_path(ctl), load_error_string(err));
+	return false;
+}
+
+static bool save_store(Ckctl *ctl, const CKRegistry *registry)
+{
+	if(ck_registry_save(registry, store_path(ctl)) == CHIAKI_ERR_SUCCESS)
+		return true;
+	fprintf(ctl->err, "ckctl: no pude guardar los registros en %s\n", store_path(ctl));
+	return false;
+}
+
+/** The nickname as a C string, in name. */
+static const char *entry_name(const CKRegistryEntry *entry, char name[NAME_SIZE])
+{
+	size_t len = strnlen(entry->host.server_nickname, sizeof(entry->host.server_nickname));
+	memcpy(name, entry->host.server_nickname, len);
+	name[len] = '\0';
+	return len ? name : "(sin nombre)";
+}
+
+/** Remembers that the console answered at addr. Returns whether that changed the entry. */
+static bool remember_addr(CKRegistryEntry *entry, const char *addr)
+{
+	if(!strcmp(entry->last_host, addr))
+		return false;
+	snprintf(entry->last_host, sizeof(entry->last_host), "%s", addr);
+	return true;
 }
 
 static int cmd_discover(Ckctl *ctl)
@@ -144,8 +228,23 @@ static int cmd_discover(Ckctl *ctl)
 		fprintf(ctl->err, "ckctl: ninguna consola respondió en %ld s\n", seconds);
 		return 1;
 	}
+
+	// The registered consoles are marked, and their address kept for wakeup.
+	CKRegistry registry;
+	ChiakiErrorCode load_err = ck_registry_load(&registry, store_path(ctl));
+	if(load_err != CHIAKI_ERR_SUCCESS)
+		fprintf(ctl->err, "ckctl: aviso: no pude leer los registros de %s: %s\n", store_path(ctl),
+			load_error_string(load_err));
+	bool changed = false;
 	for(size_t i = 0; i < count; i++)
-		print_console(ctl->out, &consoles[i]);
+	{
+		CKRegistryEntry *entry = ck_registry_find_host_id(&registry, consoles[i].host_id);
+		print_console(ctl->out, &consoles[i], entry != NULL);
+		if(entry && remember_addr(entry, consoles[i].addr))
+			changed = true;
+	}
+	if(changed)
+		save_store(ctl, &registry);
 	return 0;
 }
 
@@ -174,7 +273,7 @@ static int cmd_regist(Ckctl *ctl)
 	}
 
 	CKConsole console;
-	if(probe(ctl, &console))
+	if(probe(ctl, ctl->host, &console))
 	{
 		request.target = console.target;
 		fprintf(ctl->out, "Registrando con %s (%s, %s)...\n", console.name, console.ps5 ? "PS5" : "PS4",
@@ -203,7 +302,27 @@ static int cmd_regist(Ckctl *ctl)
 
 	const ChiakiRegisteredHost *host = &outcome.registered_host;
 	fprintf(ctl->out, "%s\n", ck_regist_result_string(result));
-	fprintf(ctl->out, "Guarda estos datos fuera del repo; ckctl wakeup usa rp_regist_key:\n");
+	char id[13];
+	ck_registry_mac_hex(host->server_mac, id);
+	CKRegistry registry;
+	if(load_store(ctl, &registry))
+	{
+		bool replaced = ck_registry_find_mac(&registry, host->server_mac) != NULL;
+		if(ck_registry_put(&registry, host, ctl->host) != CHIAKI_ERR_SUCCESS)
+			fprintf(ctl->err, "ckctl: ya hay %d consolas registradas; borra una con ckctl forget\n", CK_REGISTRY_MAX);
+		else if(save_store(ctl, &registry))
+		{
+			CKRegistryEntry *entry = ck_registry_find_mac(&registry, host->server_mac);
+			char name[NAME_SIZE];
+			fprintf(ctl->out, "%s el registro de %s (id %s) en %s.\n", replaced ? "Reemplacé" : "Guardé",
+				entry_name(entry, name), id, store_path(ctl));
+			fprintf(ctl->out, "Para despertarla: ckctl wakeup -c %s\n", id);
+			return 0;
+		}
+	}
+
+	// Not saved: the keys go to the terminal instead, or the registration is lost.
+	fprintf(ctl->out, "No quedó guardado. Guarda estos datos fuera del repo; ckctl wakeup -k usa rp_regist_key:\n");
 	fprintf(ctl->out, "  target=%d\n", (int)host->target);
 	fprintf(ctl->out, "  server_nickname=%.*s\n", (int)strnlen(host->server_nickname, sizeof(host->server_nickname)),
 		host->server_nickname);
@@ -215,13 +334,56 @@ static int cmd_regist(Ckctl *ctl)
 	fprintf(ctl->out, "  rp_key=");
 	print_hex(ctl->out, host->rp_key, sizeof(host->rp_key));
 	fputc('\n', ctl->out);
-	return 0;
+	return 1;
 }
 
-static int cmd_wakeup(Ckctl *ctl)
+/** Sends the wake-up to host and, with -w, waits for the console to turn on. */
+static int wake(Ckctl *ctl, const char *host, const ChiakiRegisteredHost *registered)
 {
-	if(!ctl->host || !ctl->key)
-		return usage_error(ctl, "wakeup pide -H y -k");
+	ChiakiErrorCode err = ck_console_wakeup(&ctl->log, host, registered);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		fprintf(ctl->err, "ckctl: no se pudo mandar la señal para despertar: %s\n", chiaki_error_string(err));
+		return 1;
+	}
+	fprintf(ctl->out, "Mandé la señal para despertar a %s.\n", host);
+	if(!ctl->seconds_set || !ctl->seconds)
+		return 0;
+
+	CKConsole console;
+	uint64_t start = chiaki_time_now_monotonic_ms();
+	uint64_t last_wake = start;
+	uint64_t limit = (uint64_t)ctl->seconds * 1000;
+	while(true)
+	{
+		uint64_t poll = chiaki_time_now_monotonic_ms();
+		if(probe(ctl, host, &console) && console.state == CHIAKI_DISCOVERY_HOST_STATE_READY)
+		{
+			fprintf(ctl->out, "%s se encendió en %llu s.\n", console.name,
+				(unsigned long long)((chiaki_time_now_monotonic_ms() - start + 999) / 1000));
+			return 0;
+		}
+		uint64_t now = chiaki_time_now_monotonic_ms();
+		if(now - start >= limit)
+			break;
+		// The console may have missed the packet: it is UDP.
+		if(now - last_wake >= WAKE_RESEND_MS)
+		{
+			ck_console_wakeup(&ctl->log, host, registered);
+			last_wake = now;
+		}
+		if(now - poll < WAKE_POLL_MS)
+			chiaki_sleep_ms(WAKE_POLL_MS - (now - poll));
+	}
+	fprintf(ctl->err, "ckctl: %s no se encendió en %ld s\n", host, ctl->seconds);
+	return 1;
+}
+
+/** wakeup -H -k: with a key given by hand, as before the store existed. */
+static int wakeup_with_key(Ckctl *ctl)
+{
+	if(!ctl->host)
+		return usage_error(ctl, "wakeup con -k pide -H");
 	ChiakiRegisteredHost registered;
 	memset(&registered, 0, sizeof(registered));
 	registered.target = ctl->ps4 ? CHIAKI_TARGET_PS4_10 : CHIAKI_TARGET_PS5_1;
@@ -238,48 +400,161 @@ static int cmd_wakeup(Ckctl *ctl)
 	}
 
 	CKConsole console;
-	if(probe(ctl, &console) && console.state == CHIAKI_DISCOVERY_HOST_STATE_READY)
+	if(probe(ctl, ctl->host, &console) && console.state == CHIAKI_DISCOVERY_HOST_STATE_READY)
 	{
 		fprintf(ctl->out, "%s ya está encendida.\n", console.name);
 		return 0;
 	}
+	return wake(ctl, ctl->host, &registered);
+}
 
-	ChiakiErrorCode err = ck_console_wakeup(&ctl->log, ctl->host, &registered);
-	if(err != CHIAKI_ERR_SUCCESS)
+/** The registered console that -c, or else -H, names; NULL after saying why. */
+static CKRegistryEntry *pick_entry(Ckctl *ctl, CKRegistry *registry)
+{
+	if(!registry->count)
 	{
-		fprintf(ctl->err, "ckctl: no se pudo mandar la señal para despertar: %s\n", chiaki_error_string(err));
-		return 1;
+		fprintf(ctl->err, "ckctl: no hay consolas registradas en %s; regístrala con ckctl regist\n", store_path(ctl));
+		return NULL;
 	}
-	fprintf(ctl->out, "Mandé la señal para despertar a %s.\n", ctl->host);
-	if(!ctl->seconds_set || !ctl->seconds)
-		return 0;
-
-	uint64_t start = chiaki_time_now_monotonic_ms();
-	uint64_t last_wake = start;
-	uint64_t limit = (uint64_t)ctl->seconds * 1000;
-	while(true)
+	if(ctl->console)
 	{
-		uint64_t poll = chiaki_time_now_monotonic_ms();
-		if(probe(ctl, &console) && console.state == CHIAKI_DISCOVERY_HOST_STATE_READY)
+		CKRegistryEntry *entry = ck_registry_find(registry, ctl->console);
+		if(!entry)
+			fprintf(ctl->err, "ckctl: ninguna consola registrada se llama, tiene el id o la IP \"%s\" (ckctl list las muestra)\n",
+				ctl->console);
+		return entry;
+	}
+	if(registry->count == 1)
+		return &registry->entries[0];
+	if(ctl->host)
+	{
+		CKRegistryEntry *entry = ck_registry_find(registry, ctl->host);
+		CKConsole console;
+		if(!entry && probe(ctl, ctl->host, &console))
+			entry = ck_registry_find_host_id(registry, console.host_id);
+		if(entry)
+			return entry;
+	}
+	fprintf(ctl->err, "ckctl: hay %zu consolas registradas: elige una con -c (ckctl list las muestra)\n", registry->count);
+	return NULL;
+}
+
+/** Whether the console that answered is the registered one, not another at its old IP. */
+static bool is_entry(const CKRegistryEntry *entry, const CKConsole *console)
+{
+	char id[13];
+	ck_registry_mac_hex(entry->host.server_mac, id);
+	return !strcmp(id, console->host_id);
+}
+
+/** Searches the network (or -b) for the registered console, which may have a new IP. */
+static bool search_entry(Ckctl *ctl, const CKRegistryEntry *entry, CKConsole *found)
+{
+	CKConsole consoles[CK_CONSOLES_MAX];
+	size_t count = 0;
+	if(ck_consoles_discover(&ctl->log, ctl->search, DISCOVER_TIMEOUT_S * 1000, consoles, CK_CONSOLES_MAX, &count)
+		!= CHIAKI_ERR_SUCCESS)
+		return false;
+	for(size_t i = 0; i < count; i++)
+	{
+		if(is_entry(entry, &consoles[i]))
 		{
-			fprintf(ctl->out, "%s se encendió en %llu s.\n", console.name,
-				(unsigned long long)((chiaki_time_now_monotonic_ms() - start + 999) / 1000));
+			*found = consoles[i];
+			return true;
+		}
+	}
+	return false;
+}
+
+static int cmd_wakeup(Ckctl *ctl)
+{
+	if(ctl->key)
+		return wakeup_with_key(ctl);
+	CKRegistry registry;
+	if(!load_store(ctl, &registry))
+		return 1;
+	CKRegistryEntry *entry = pick_entry(ctl, &registry);
+	if(!entry)
+		return 1;
+	char name[NAME_SIZE];
+	entry_name(entry, name);
+
+	// Where it was last, then anywhere: the router may have given it a new IP.
+	const char *host = ctl->host ? ctl->host : (entry->last_host[0] ? entry->last_host : NULL);
+	CKConsole console;
+	bool found = host && probe(ctl, host, &console) && is_entry(entry, &console);
+	if(!found)
+		found = search_entry(ctl, entry, &console);
+	char addr[sizeof(console.addr)];
+	if(found)
+	{
+		snprintf(addr, sizeof(addr), "%s", console.addr);
+		if(remember_addr(entry, addr))
+			save_store(ctl, &registry);
+		if(console.state == CHIAKI_DISCOVERY_HOST_STATE_READY)
+		{
+			fprintf(ctl->out, "%s ya está encendida.\n", name);
 			return 0;
 		}
-		uint64_t now = chiaki_time_now_monotonic_ms();
-		if(now - start >= limit)
-			break;
-		// The console may have missed the packet: it is UDP.
-		if(now - last_wake >= WAKE_RESEND_MS)
-		{
-			ck_console_wakeup(&ctl->log, ctl->host, &registered);
-			last_wake = now;
-		}
-		if(now - poll < WAKE_POLL_MS)
-			chiaki_sleep_ms(WAKE_POLL_MS - (now - poll));
 	}
-	fprintf(ctl->err, "ckctl: %s no se encendió en %ld s\n", ctl->host, ctl->seconds);
-	return 1;
+	else if(host)
+	{
+		// In rest mode with its network off it does not answer, but it may still wake.
+		snprintf(addr, sizeof(addr), "%s", host);
+		fprintf(ctl->out, "%s no contestó la búsqueda; mando la señal a %s de todos modos.\n", name, addr);
+	}
+	else
+	{
+		fprintf(ctl->err, "ckctl: no encuentro a %s en la red y no sé su IP; pásala con -H\n", name);
+		return 1;
+	}
+	return wake(ctl, addr, &entry->host);
+}
+
+static int cmd_list(Ckctl *ctl)
+{
+	CKRegistry registry;
+	if(!load_store(ctl, &registry))
+		return 1;
+	if(!registry.count)
+	{
+		fprintf(ctl->out, "No hay consolas registradas en %s.\n", store_path(ctl));
+		return 0;
+	}
+	for(size_t i = 0; i < registry.count; i++)
+	{
+		const CKRegistryEntry *entry = &registry.entries[i];
+		char id[13];
+		ck_registry_mac_hex(entry->host.server_mac, id);
+		char name[NAME_SIZE];
+		fprintf(ctl->out, "%-15s  %s  %s  id %s\n", entry->last_host[0] ? entry->last_host : "(sin IP)",
+			chiaki_target_is_ps5(entry->host.target) ? "PS5" : "PS4", entry_name(entry, name), id);
+	}
+	return 0;
+}
+
+static int cmd_forget(Ckctl *ctl)
+{
+	if(!ctl->console)
+		return usage_error(ctl, "forget pide -c");
+	CKRegistry registry;
+	if(!load_store(ctl, &registry))
+		return 1;
+	CKRegistryEntry *entry = ck_registry_find(&registry, ctl->console);
+	if(!entry)
+	{
+		fprintf(ctl->err, "ckctl: ninguna consola registrada se llama, tiene el id o la IP \"%s\"\n", ctl->console);
+		return 1;
+	}
+	char id[13];
+	ck_registry_mac_hex(entry->host.server_mac, id);
+	char name[NAME_SIZE];
+	entry_name(entry, name);
+	ck_registry_remove(&registry, entry);
+	if(!save_store(ctl, &registry))
+		return 1;
+	fprintf(ctl->out, "Borré el registro de %s (id %s). Para volver a usarla, regístrala con ckctl regist.\n", name, id);
+	return 0;
 }
 
 int ckctl_main(int argc, char **argv, FILE *out, FILE *err)
@@ -323,6 +598,10 @@ int ckctl_main(int argc, char **argv, FILE *out, FILE *err)
 		return cmd_regist(&ctl);
 	if(!strcmp(command, "wakeup"))
 		return cmd_wakeup(&ctl);
+	if(!strcmp(command, "list"))
+		return cmd_list(&ctl);
+	if(!strcmp(command, "forget"))
+		return cmd_forget(&ctl);
 	fprintf(err, "ckctl: comando desconocido: %s\n\n%s", command, usage);
 	return 2;
 }
