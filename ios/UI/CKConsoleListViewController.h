@@ -19,6 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithNibName:(nullable NSString *)nibName bundle:(nullable NSBundle *)bundle NS_UNAVAILABLE;
 - (nullable instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
+/** Where the consoles come from; it can change while the app runs (simulated or on the network). */
+@property (nonatomic, strong) id<CKConsoleService> service;
+
 @end
 
 NS_ASSUME_NONNULL_END

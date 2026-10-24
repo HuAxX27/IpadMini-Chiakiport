@@ -27,7 +27,7 @@ APPLICATION_NAME = Chiakiport
 # object and its directory stamp after the source path it is given, so a ../
 # path would leave build files outside .theos: each shared_*.c includes one
 # file from there, as ios/cli does.
-Chiakiport_FILES = main.m CKAppDelegate.m CKConsoleService.m CKMockConsoleService.m \
+Chiakiport_FILES = main.m CKAppDelegate.m CKConsoleService.m CKMockConsoleService.m CKLanConsoleService.m \
 	CKConsoleListViewController.m CKConsoleCell.m CKRegistViewController.m CKStreamViewController.m \
 	CKSettingsStore.m CKSettingsViewController.m \
 	ck_console_rows.c ck_ui_settings.c shared_ck_consoles.c shared_ck_registry.c

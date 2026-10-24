@@ -98,6 +98,11 @@ static void mock_host(ChiakiRegisteredHost *host, const char *name, const char *
 	return _items;
 }
 
+- (NSString *)problem
+{
+	return nil;
+}
+
 - (void)start
 {
 }

@@ -3,17 +3,44 @@
 #import "CKAppDelegate.h"
 
 #import "CKConsoleListViewController.h"
+#import "CKLanConsoleService.h"
 #import "CKMockConsoleService.h"
 #import "CKTheme.h"
 
 @implementation CKAppDelegate
+{
+	CKSettingsStore *_settings;
+	CKConsoleListViewController *_list;
+	CKLanConsoleService *_lanService;
+	CKMockConsoleService *_mockService;
+}
+
+/** The consoles on the network, or the made-up ones when the settings ask for them. */
+- (id<CKConsoleService>)currentService
+{
+	if(_settings.simulatedConsoles)
+	{
+		if(!_mockService)
+			_mockService = [[CKMockConsoleService alloc] init];
+		return _mockService;
+	}
+	if(!_lanService)
+		_lanService = [[CKLanConsoleService alloc] init];
+	return _lanService;
+}
+
+- (void)settingsChanged:(NSNotification *)notification
+{
+	_list.service = [self currentService];
+}
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-	id<CKConsoleService> service = [[CKMockConsoleService alloc] init];
-	CKConsoleListViewController *list = [[CKConsoleListViewController alloc] initWithService:service
-		settings:[CKSettingsStore sharedStore]];
-	UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:list];
+	_settings = [CKSettingsStore sharedStore];
+	_list = [[CKConsoleListViewController alloc] initWithService:[self currentService] settings:_settings];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(settingsChanged:)
+		name:CKSettingsDidChangeNotification object:_settings];
+	UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:_list];
 	UINavigationBar *bar = navigation.navigationBar;
 	bar.barStyle = UIBarStyleBlack;
 	bar.translucent = NO;

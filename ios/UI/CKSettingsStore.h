@@ -29,6 +29,15 @@ extern NSString *const CKSettingsDidChangeNotification;
 @property (nonatomic, readonly) CKSettings settings;
 
 /**
+ * YES shows the made-up consoles of CKMockConsoleService instead of searching
+ * the network, to try the app without a console. Kept in the same file, under
+ * simulated_consoles; NO when missing.
+ */
+@property (nonatomic, readonly) BOOL simulatedConsoles;
+
+- (BOOL)updateSimulatedConsoles:(BOOL)simulated error:(NSError **)error;
+
+/**
  * Uses settings from now on and writes them to the file. Returns NO, with
  * error, when the file could not be written; the settings still apply until
  * the app closes. Settings the app does not offer are refused.
