@@ -6,9 +6,9 @@ Del H.264 que entrega el core a la pantalla del iPad.
 |---|---|
 | `CKVideoSink.h` | Contrato C2 con A2 |
 | `ck_h264.h`, `ck_h264.c` | A3.1: de Annex B a AVCC, extracción de SPS y PPS y separación en cuadros, en C portable y probado en Linux |
-| `ck_video_core.h`, `ck_video_core.c` | A3.2: la mitad en C del sumidero, probada en Linux contra un decodificador falso |
+| `ck_video_core.h`, `ck_video_core.c` | A3.2 y A3.3: la mitad en C del sumidero y su recuperación de errores, probadas en Linux contra un decodificador falso |
 | `CKVideoSink.m` | A3.2: el contrato C2 con VideoToolbox, sobre `ck_video_core.c` |
-| `ck_video_sink_stats.h` | Todo lo que cuenta el sumidero, más allá de C2, para CK Video y A7 |
+| `ck_video_sink_stats.h` | Todo lo que cuenta el sumidero, más allá de C2, para CK Video y A7, y las fallas que se pueden simular (A3.3) |
 | `ckvideo/` | CK Video, el banco de pruebas del video en el iPad (no es la app) |
 
 ## El sumidero (A3.2)
@@ -31,9 +31,26 @@ En cada llamada a `ck_video_sink_sample_cb`:
 2. `ck_h264_param_store_update()`. Si el SPS o el PPS cambiaron, el decodificador se rearma antes del siguiente cuadro: si VideoToolbox acepta el formato nuevo (`VTDecompressionSessionCanAcceptFormatDescription`) se queda la misma sesión, si no se crea otra.
 3. Si el búfer era solo la cabecera del perfil, devuelve `true` sin decodificar.
 4. Si llega un cuadro antes de tener SPS y PPS, o no se pudo crear el decodificador, devuelve `false` y el core lo trata como perdido.
-5. Si no, decodifica y devuelve si VideoToolbox pudo. Si VideoToolbox dice que la sesión ya no sirve (`kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`), la suelta y la crea otra vez en el siguiente cuadro.
+5. Si el decodificador espera un cuadro clave (ver [Recuperación](#recuperación-a33)) y este no lo es, devuelve `false` sin llamar a VideoToolbox. El decodificador se crea con el primer cuadro clave, no antes.
+6. Si no, decodifica y devuelve si VideoToolbox pudo. Si VideoToolbox dice que la sesión ya no sirve (`kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`), la suelta y espera un cuadro clave para crear otra.
 
 Todo corre bajo un candado del sumidero: el hilo de video del core, y `ck_video_sink_reset()` y las estadísticas desde el hilo principal, nunca se cruzan.
+
+## Recuperación (A3.3)
+
+Un cuadro que el sumidero no decodifica vuelve al core como `false`. El core no lo guarda como referencia: si los cuadros P siguientes apuntaban a él, los cambia para que apunten a uno anterior que sí tenga, entre los últimos 8 (`CHIAKI_VIDEO_RECEIVER_REF_SLOTS`). Si ya no le queda ninguno, le pide un IDR a la consola (`video_receiver_maybe_request_idr()` en `lib/src/videoreceiver.c`: como mucho cada 100 ms, y lo vuelve a pedir si en 1 s no llega).
+
+Eso alcanza cuando se pierde un cuadro P: el decodificador conserva los anteriores y el core apunta ahí. No alcanza cuando el decodificador se queda sin imágenes: VideoToolbox lo invalidó, cambiaron el SPS o el PPS y hay que crearlo otra vez, o falló el propio cuadro clave. Un cuadro P mandado entonces apuntaría a imágenes que el decodificador no tiene y se vería con bloques verdes o grises. Por eso en esos casos el sumidero **espera un cuadro clave**:
+
+- Rechaza (`false`, sin llamar a VideoToolbox) todo cuadro que no sea clave. Clave es un IDR o un cuadro hecho solo de slices I o SI, que `ck_h264_slice_type()` lee de la cabecera de cada slice. Mientras tanto la capa sigue mostrando la última imagen buena.
+- Como esos cuadros no quedan de referencia, a los 8 cuadros el core se queda sin referencias y pide el IDR. La imagen se queda quieta unos 8 cuadros (0,27 s a 30 cuadros/s) más lo que tarde la PS5 en mandar el IDR, y vuelve sola; nunca se congela para siempre ni muestra basura.
+- Cuando llega el cuadro clave, crea el decodificador si hace falta, lo decodifica y deja de esperar.
+
+Al empezar una sesión también espera un cuadro clave, pero la PS5 abre cada sesión con su IDR, así que no rechaza nada. Si se rechaza un cuadro P suelto (VideoToolbox no pudo con él), no espera: el core se encarga como arriba.
+
+Las cifras de la espera están en `CKVideoCoreStats` (y en el panel de CK Video): `frames_waiting`, los cuadros rechazados por esperar; `keyframe_waits`, cuántas veces hubo que esperar; y `keyframe_wait_us_max`, la espera más larga, desde la falla hasta que se decodificó el cuadro clave.
+
+Para probarla sin perder paquetes de verdad, `ck_video_sink_simulate()` (en `ck_video_sink_stats.h`) hace fallar el siguiente cuadro que llegaría a VideoToolbox, como un cuadro rechazado (`CK_VIDEO_SIMULATE_LOST_FRAME`) o como una sesión invalidada (`CK_VIDEO_SIMULATE_BROKEN_DECODER`), y el sumidero se recupera igual que de una falla real. CK Video tiene un botón para cada una.
 
 ### Para la pantalla de juego (A6.5)
 
@@ -44,17 +61,27 @@ Todo corre bajo un candado del sumidero: el hilo de video del core, y `ck_video_
 
 ## CK Video
 
-`ckvideo/` es el paquete `com.thehuax.ckvideo`: una app para probar el video en el iPad sin esperar a la app de A6. Reproduce una captura de A2.8 a 30 cuadros por segundo a través de `CKVideoSink`, el mismo sumidero que usará la app, en un hilo propio como el del core, y vuelve a empezar al terminar. Un panel encima del video dice cada segundo cuántos cuadros se decodificaron y mostraron, cuánto tardó decodificar (promedio y máximo), los fallidos y omitidos, y la memoria. Tocar el video oculta o muestra el panel.
+`ckvideo/` es el paquete `com.thehuax.ckvideo`: una app para probar el video en el iPad sin esperar a la app de A6. Reproduce una captura de A2.8 a 30 cuadros por segundo a través de `CKVideoSink`, el mismo sumidero que usará la app, en un hilo propio como el del core, y vuelve a empezar al terminar. Un panel encima del video dice cada segundo cuántos cuadros se decodificaron y mostraron, cuánto tardó decodificar (promedio y máximo), los fallidos y omitidos, la espera de cuadros clave y la memoria. Tocar el video oculta o muestra el panel.
+
+- **Simular pérdida** y **Simular decodificador roto** hacen fallar el siguiente cuadro (A3.3). Con una captura no hay core ni consola que pidan un IDR, así que el reproductor hace de consola: si el sumidero rechaza 8 cuadros seguidos, vuelve al principio de la captura, a su IDR, y lo cuenta en "keyframes enviados". Con la captura de la PS5, que tiene un solo IDR, la imagen vuelve al principio de la grabación. Una pérdida simulada tampoco tiene quien cambie la referencia de los cuadros siguientes, así que lo que haga VideoToolbox con ellos (error o bloques hasta el siguiente IDR) solo dice cómo reacciona a un cuadro faltante; con la PS5 en vivo (A3.4) el core sí la cambia.
 
 - Busca la captura en `/var/mobile/Library/Chiakiport/captura.h264` y, si no está, en `/var/mobile/captura.h264`, donde la dejó la prueba de A2.8.
 - Lo que dicen el sumidero y la app queda en `/var/mobile/Library/Chiakiport/ckvideo.log` (uno por arranque), con una línea de cifras cada 10 s: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
 - La pantalla no se apaga mientras reproduce. Al salir de la app se detiene.
 
-### Prueba en el iPad (A3.2)
+### Prueba en el iPad (A3.2 y A3.3)
 
-1. Instalar: `ios\toolchain\deploy.ps1 -Ip ipad -Path com.thehuax.ckvideo_0.1.0_iphoneos-arm.deb`, o `scp` y `dpkg -i` (lo hace una sesión de la laptop).
-2. Abrir **CK Video** y tocar **Reproducir la captura**.
-3. Qué reportar: si se ve la pantalla de ajustes de la PS5 completa, sin bloques ni colores raros, con barras negras arriba y abajo; si se mueve con fluidez; y las cifras del panel tras un minuto (decodificados por segundo, ms de decodificación, fallidos, rechazados por la capa, memoria). El log tiene lo mismo.
+En la laptop (lo hace una sesión de Remote Control, sin preguntar):
+
+1. Instalar el `.deb` del CI: `ios\toolchain\deploy.ps1 -Ip ipad -Path com.thehuax.ckvideo_0.2.0_iphoneos-arm.deb`, y revisar que la captura de A2.8 esté en el iPad (`ssh ipad ls -l /var/mobile/captura.h264`).
+2. Después de la prueba física, guardar el log: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
+
+En el iPad (TheHuAx):
+
+1. Abrir **CK Video** y tocar **Reproducir la captura**. Reportar si se ve la pantalla de la PS5 completa, sin bloques ni colores raros, con barras negras arriba y abajo, y si se mueve con fluidez.
+2. Pasados unos 10 s, tocar **Simular decodificador roto**. Lo esperado: la imagen se queda quieta un instante (unos 0,3 s) y vuelve desde el principio de la grabación, sin bloques verdes ni grises. Reportar si fue así.
+3. Pasados otros 10 s, tocar **Simular pérdida**. Reportar qué se ve en los segundos siguientes (nada, bloques que se arrastran, o un salto al principio).
+4. Reportar las cifras del panel al final: decodificados por segundo, ms de decodificación, fallidos, rotos, esperando keyframe, la espera más larga, keyframes enviados y memoria. El log tiene lo mismo.
 
 ## Pruebas
 
@@ -64,7 +91,9 @@ Todo corre bajo un candado del sumidero: el hilo de video del core, y `ck_video_
 
 Corre las pruebas unitarias de `ck_h264` y del sumidero (`ios/tests/ck_video_tests.c`) con ASan y UBSan, las mismas en armv7 bajo `qemu-arm`, revisa la muestra de x264 de `ios/tests/data/` y cada captura que se le pase (también en armv7), y compara el AVCC byte por byte con el que produce ffmpeg, el de la muestra y el de cada captura. Después manda la muestra, cada captura y un clip de 960×540 por el sumidero, cuadro por cuadro, a un decodificador falso que escribe lo que recibe, y ffmpeg debe decodificar eso a las mismas imágenes que el original, cuadro por cuadro.
 
-Las pruebas del sumidero cubren la cabecera sola, un cuadro antes de la cabecera, un cambio de perfil, un cuadro que el decodificador rechaza, un decodificador que se rompe o que no se puede crear, un cuadro más grande que el búfer, las cifras, `reset`, búferes al azar y dos hilos a la vez. Las capturas de A2.8 se esperan en Annex B crudo, el mismo formato que abre `ffplay`: la cabecera del perfil y luego cada cuadro tal como lo entrega el core.
+Al final repite eso rompiendo el decodificador cada 10 cuadros (A3.3). Cada cuadro tiene que hacer lo que promete la recuperación: el roto se pierde, los siguientes esperan y el siguiente IDR trae la imagen de vuelta. Y ffmpeg tiene que decodificar lo que recibió el decodificador falso a las mismas imágenes que el original en los cuadros que se quedaron: ninguno se armó con una referencia que faltaba. En el clip de 960×540 (un IDR cada 15 cuadros) son 6 rupturas y 5 recuperaciones; en la captura de la PS5, que tiene un solo IDR, la imagen ya no vuelve sin pedirle uno a la consola, que es lo que hace el core.
+
+Las pruebas del sumidero cubren la cabecera sola, un cuadro antes de la cabecera, un cambio de perfil, un cuadro que el decodificador rechaza, un decodificador que se rompe o que no se puede crear, un cuadro más grande que el búfer, las cifras, `reset`, búferes al azar y dos hilos a la vez. Las de A3.3 cubren la espera del cuadro clave con un decodificador nuevo, roto o con un SPS nuevo, un cuadro clave que falla, un cuadro P que falla sin esperar, un cuadro de slices I que no es IDR, la simulación y el tiempo de espera medido. `ck_h264_tests.c` prueba `ck_h264_slice_type()` con slices armados bit a bit, con y sin bytes de prevención de emulación, y cuenta los tipos de slice de cada captura. Las capturas de A2.8 se esperan en Annex B crudo, el mismo formato que abre `ffplay`: la cabecera del perfil y luego cada cuadro tal como lo entrega el core.
 
 ## La captura real de la PS5
 

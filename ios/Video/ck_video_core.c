@@ -18,6 +18,16 @@ struct ck_video_core_t
 	CKH264ParamStore params;
 	/** The decoder was made from params and still works. */
 	bool configured;
+	/**
+	 * The decoder holds no picture to refer to: it is not made yet, it broke,
+	 * or its last keyframe failed. Only a keyframe can start it again.
+	 */
+	bool need_keyframe;
+	/** When need_keyframe was set, and the frames refused since. */
+	uint64_t wait_start_us;
+	uint32_t wait_refused;
+	/** CKVideoSimulation bits for the next frame. */
+	unsigned simulate;
 	CKVideoCoreStats stats;
 };
 
@@ -37,6 +47,15 @@ CKVideoCore *ck_video_core_new(const CKVideoDecoder *decoder)
 	core->decoder = *decoder;
 	ck_h264_param_store_reset(&core->params);
 	return core;
+}
+
+static void wait_for_keyframe(CKVideoCore *core)
+{
+	if(core->need_keyframe)
+		return;
+	core->need_keyframe = true;
+	core->wait_start_us = core->decoder.now_us(core->decoder.user);
+	core->wait_refused = 0;
 }
 
 static void drop_decoder(CKVideoCore *core)
@@ -80,6 +99,53 @@ static void count_decode(CKVideoCore *core, uint64_t start_us)
 		core->stats.decode_us_max = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
 }
 
+// A frame the decoder can start from: an IDR, or one made only of I (or
+// SI) slices, which the PS5 may send when the core asks for a keyframe.
+static bool is_keyframe(const uint8_t *avcc, size_t size, uint32_t nal_types)
+{
+	if(nal_types & CK_H264_NAL_BIT(CK_H264_NAL_IDR))
+		return true;
+	bool slices = false;
+	size_t pos = 0;
+	while(size - pos > CK_H264_AVCC_LENGTH_SIZE)
+	{
+		size_t len = ((size_t)avcc[pos] << 24) | ((size_t)avcc[pos + 1] << 16) | ((size_t)avcc[pos + 2] << 8)
+			| avcc[pos + 3];
+		pos += CK_H264_AVCC_LENGTH_SIZE;
+		if(!len || len > size - pos)
+			break;
+		if(CK_H264_NAL_TYPE(avcc[pos]) == CK_H264_NAL_SLICE)
+		{
+			int type = ck_h264_slice_type(avcc + pos, len);
+			if(type != CK_H264_SLICE_I && type != CK_H264_SLICE_SI)
+				return false;
+			slices = true;
+		}
+		pos += len;
+	}
+	return slices;
+}
+
+static void refuse_waiting(CKVideoCore *core)
+{
+	core->stats.frames_waiting++;
+	core->wait_refused++;
+}
+
+static void keyframe_decoded(CKVideoCore *core)
+{
+	if(!core->need_keyframe)
+		return;
+	core->need_keyframe = false;
+	if(!core->wait_refused)
+		return;
+	// The picture stood still from the failure until now.
+	uint64_t us = core->decoder.now_us(core->decoder.user) - core->wait_start_us;
+	core->stats.keyframe_waits++;
+	if(us > core->stats.keyframe_wait_us_max)
+		core->stats.keyframe_wait_us_max = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+}
+
 static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size, int32_t frames_lost)
 {
 	if(frames_lost > 0)
@@ -100,11 +166,23 @@ static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size
 	if(!info.nal_written)
 		return true;
 
+	// Until a keyframe comes, any other frame would refer to pictures the
+	// decoder does not have and show garbage: it is lost for the core, which
+	// then asks the console for a keyframe.
+	bool keyframe = is_keyframe(core->avcc, info.avcc_size, info.nal_types);
 	if(!core->configured)
 	{
 		if(!ck_h264_param_store_ready(&core->params))
 		{
 			core->stats.frames_skipped++;
+			return false;
+		}
+		// A new decoder, or one with new parameters, starts at a keyframe,
+		// and is made only then.
+		wait_for_keyframe(core);
+		if(!keyframe)
+		{
+			refuse_waiting(core);
 			return false;
 		}
 		core->stats.configures++;
@@ -117,21 +195,44 @@ static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size
 			return false;
 		}
 	}
+	else if(core->need_keyframe && !keyframe)
+	{
+		refuse_waiting(core);
+		return false;
+	}
 
-	uint64_t start_us = core->decoder.now_us(core->decoder.user);
-	CKVideoDecodeResult result = core->decoder.decode(core->decoder.user, core->avcc, info.avcc_size);
-	count_decode(core, start_us);
+	CKVideoDecodeResult result;
+	unsigned simulate = core->simulate;
+	core->simulate = 0;
+	if(simulate & CK_VIDEO_SIMULATE_BROKEN_DECODER)
+		result = CK_VIDEO_DECODE_BROKEN;
+	else if(simulate & CK_VIDEO_SIMULATE_LOST_FRAME)
+		result = CK_VIDEO_DECODE_FAILED;
+	else
+	{
+		uint64_t start_us = core->decoder.now_us(core->decoder.user);
+		result = core->decoder.decode(core->decoder.user, core->avcc, info.avcc_size);
+		count_decode(core, start_us);
+	}
 	switch(result)
 	{
 		case CK_VIDEO_DECODE_OK:
 			core->stats.frames_decoded++;
+			if(keyframe)
+				keyframe_decoded(core);
 			return true;
 		case CK_VIDEO_DECODE_BROKEN:
 			core->stats.decoder_broken++;
 			drop_decoder(core);
+			wait_for_keyframe(core);
 			break;
 		case CK_VIDEO_DECODE_FAILED:
 		default:
+			// A keyframe that fails leaves nothing to refer to. A P frame
+			// that fails leaves the pictures before it, which the core points
+			// the next frames at.
+			if(keyframe)
+				wait_for_keyframe(core);
 			break;
 	}
 	core->stats.frames_failed++;
@@ -152,6 +253,15 @@ void ck_video_core_reset(CKVideoCore *core)
 	pthread_mutex_lock(&core->mutex);
 	drop_decoder(core);
 	ck_h264_param_store_reset(&core->params);
+	core->need_keyframe = false;
+	core->simulate = 0;
+	pthread_mutex_unlock(&core->mutex);
+}
+
+void ck_video_core_simulate(CKVideoCore *core, CKVideoSimulation what)
+{
+	pthread_mutex_lock(&core->mutex);
+	core->simulate |= (unsigned)what;
 	pthread_mutex_unlock(&core->mutex);
 }
 

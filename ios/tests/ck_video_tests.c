@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 // Linux tests for the C half of CKVideoSink, ios/Video/ck_video_core.c
-// (A3.2), against a fake decoder that checks what it is given. Run them with
-// ./ios/tests/ck_h264_tests.sh, which also builds them for armv7 under qemu
-// and has ffmpeg decode what the fake decoder received. Two modes:
+// (A3.2 and A3.3), against a fake decoder that checks what it is given. Run
+// them with ./ios/tests/ck_h264_tests.sh, which also builds them for armv7
+// under qemu and has ffmpeg decode what the fake decoder received. Modes:
 //
 //   ck_video_tests                     unit tests
 //   ck_video_tests replay IN.h264 OUT  sends a capture through the sink frame
 //                                      by frame, as the core would, and writes
 //                                      what reached the decoder as Annex B
+//   ck_video_tests replay IN.h264 OUT EVERY KEPT
+//                                      the same, breaking the decoder on every
+//                                      EVERY-th frame that is not waiting for
+//                                      a keyframe; KEPT gets the index of each
+//                                      frame decoded, one per line
 
 #include "Video/ck_h264.h"
 #include "Video/ck_video_core.h"
@@ -46,6 +51,11 @@ static const uint8_t OTHER_HEADER[] = {
 // Frames shaped like the PS5's: slices only. The payload bytes are made up.
 static const uint8_t IDR_FRAME[] = { 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21, 0xa0 };
 static const uint8_t P_FRAME[] = { 0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x02, 0x04, 0x3c, 0x00, 0x00, 0x01, 0x41, 0x40, 0x7c };
+// A keyframe that is not an IDR: one slice of type 1 whose slice_type is I (7).
+static const uint8_t I_FRAME[] = { 0x00, 0x00, 0x00, 0x01, 0x41, 0x88, 0x84, 0x21, 0xa0 };
+// An I slice and a P slice: not a keyframe.
+static const uint8_t I_AND_P_FRAME[] = { 0x00, 0x00, 0x00, 0x01, 0x41, 0x88, 0x84, 0x21, 0xa0,
+	0x00, 0x00, 0x01, 0x41, 0x9a, 0x02, 0x04, 0x3c };
 
 // --- Fake decoder -----------------------------------------------------------
 
@@ -78,6 +88,8 @@ typedef struct
 	uint32_t decode_cost_us;
 	/** In replay mode, what the decoder got, written back as Annex B. */
 	FILE *out;
+	/** Made since the last decode(): its SPS and PPS go out before the next frame. */
+	bool header_pending;
 } Fake;
 
 static void write_nal(FILE *out, const uint8_t *nal, size_t size)
@@ -106,11 +118,7 @@ static bool fake_configure(void *user, const uint8_t *sps, size_t sps_size, cons
 		memcpy(fake->pps, pps, pps_size);
 		fake->pps_size = pps_size;
 	}
-	if(fake->out)
-	{
-		write_nal(fake->out, sps, sps_size);
-		write_nal(fake->out, pps, pps_size);
-	}
+	fake->header_pending = true;
 	fake->held = true;
 	return true;
 }
@@ -129,6 +137,12 @@ static CKVideoDecodeResult fake_decode(void *user, const uint8_t *avcc, size_t a
 	}
 	else
 		fake->frame_size = 0;
+	if(fake->out && fake->header_pending)
+	{
+		write_nal(fake->out, fake->sps, fake->sps_size);
+		write_nal(fake->out, fake->pps, fake->pps_size);
+	}
+	fake->header_pending = false;
 
 	// Each NAL unit after a 4-byte big-endian length, filling the buffer exactly.
 	size_t pos = 0;
@@ -386,6 +400,191 @@ static void test_reset(void)
 	ck_video_core_free(NULL);
 }
 
+// --- Recovery (A3.3) -----------------------------------------------------------
+
+// A frame that never reached the decoder: no call, nothing taken by the core.
+#define CHECK_REFUSED(core, fake, frame) \
+	do \
+	{ \
+		int decodes_before = (fake).decodes; \
+		CHECK(!sample((core), (frame), sizeof(frame))); \
+		CHECK((fake).decodes == decodes_before); \
+	} while(0)
+
+static void test_new_decoder_waits_for_keyframe(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	// Joining a stream between keyframes: P frames refer to pictures this
+	// decoder never had, so they wait.
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK_REFUSED(core, fake, I_AND_P_FRAME);
+	// The decoder is made for the keyframe.
+	CHECK(fake.configures == 0);
+	fake.clock_us = 70000;
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CHECK(fake.configures == 1 && fake.decodes == 2 && fake.bad_frames == 0);
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_waiting == 2 && stats.frames_decoded == 2 && stats.frames_failed == 0);
+	CHECK(stats.keyframe_waits == 1 && stats.keyframe_wait_us_max == 70000);
+	// A session that starts at its IDR, as the PS5's do, waits for nothing.
+	ck_video_core_reset(core);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	stats = stats_of(core);
+	CHECK(stats.frames_waiting == 0 && stats.keyframe_waits == 0 && stats.frames_decoded == 2);
+	ck_video_core_free(core);
+}
+
+static void test_broken_decoder_waits_for_keyframe(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	fake.script[1] = CK_VIDEO_DECODE_BROKEN;
+	fake.script_count = 2;
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	fake.clock_us = 1000000;
+	CHECK(!sample(core, P_FRAME, sizeof(P_FRAME)));
+	CHECK(fake.drops == 1 && !fake.held);
+	// The next frames wait for a keyframe, which gets a new decoder.
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK_REFUSED(core, fake, I_AND_P_FRAME);
+	CHECK(fake.configures == 1 && !fake.held);
+	// A frame of I slices is a keyframe too, IDR or not.
+	fake.clock_us = 1400000;
+	CHECK(sample(core, I_FRAME, sizeof(I_FRAME)));
+	CHECK(fake.configures == 2 && fake.held);
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CHECK(fake.frames_without_decoder == 0 && fake.bad_frames == 0);
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.decoder_broken == 1 && stats.frames_failed == 1 && stats.frames_waiting == 3);
+	CHECK(stats.frames_decoded == 3 && stats.configures == 2);
+	CHECK(stats.keyframe_waits == 1 && stats.keyframe_wait_us_max == 400000);
+	ck_video_core_free(core);
+}
+
+static void test_failed_keyframe(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	fake.script[1] = CK_VIDEO_DECODE_FAILED;
+	fake.script_count = 2;
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	// The decoder rejects the next keyframe: the pictures before it are gone
+	// for the frames after it, so they wait for another one.
+	CHECK(!sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK(fake.drops == 0 && fake.configures == 1);
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_failed == 1 && stats.frames_waiting == 1 && stats.keyframe_waits == 1 && stats.frames_decoded == 3);
+	ck_video_core_free(core);
+}
+
+static void test_failed_p_frame_keeps_going(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	fake.script[1] = CK_VIDEO_DECODE_FAILED;
+	fake.script_count = 2;
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	// The core points the next frames at the pictures before the lost one:
+	// they go straight to the decoder.
+	CHECK(!sample(core, P_FRAME, sizeof(P_FRAME)));
+	CHECK(ck_video_core_sample(core, P_FRAME, sizeof(P_FRAME), 0, true));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_failed == 1 && stats.frames_waiting == 0 && stats.frames_decoded == 3);
+	ck_video_core_free(core);
+}
+
+static void test_new_parameters_wait_for_keyframe(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	// A new SPS mid-stream: frames from before it make no sense to the new decoder.
+	CHECK(sample(core, OTHER_HEADER, sizeof(OTHER_HEADER)));
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(fake.configures == 2 && fake.sps[3] == 0x1f);
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_waiting == 1 && stats.frames_decoded == 4 && stats.keyframe_waits == 1);
+	ck_video_core_free(core);
+}
+
+static void test_simulate(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	// Asked before the stream starts: the first frame that would reach the
+	// decoder takes it. A P frame waits for the keyframe and leaves it pending; the IDR takes it.
+	ck_video_core_simulate(core, CK_VIDEO_SIMULATE_LOST_FRAME);
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK_REFUSED(core, fake, IDR_FRAME);
+	CHECK(fake.drops == 0);
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_failed == 1 && stats.frames_waiting == 1 && stats.frames_decoded == 2);
+
+	// A lost P frame: the decoder stays and the next one decodes.
+	ck_video_core_simulate(core, CK_VIDEO_SIMULATE_LOST_FRAME);
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK(sample(core, P_FRAME, sizeof(P_FRAME)));
+	stats = stats_of(core);
+	CHECK(stats.frames_failed == 1 && stats.frames_waiting == 0 && stats.decoder_broken == 0);
+
+	// A broken decoder: dropped, made again, and fed from the next keyframe.
+	ck_video_core_simulate(core, CK_VIDEO_SIMULATE_BROKEN_DECODER);
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK(fake.drops == 1 && !fake.held);
+	CHECK_REFUSED(core, fake, P_FRAME);
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(fake.configures == 2);
+	stats = stats_of(core);
+	CHECK(stats.decoder_broken == 1 && stats.frames_failed == 1 && stats.frames_waiting == 1 && stats.frames_decoded == 1);
+
+	// A reset forgets what was asked.
+	ck_video_core_simulate(core, CK_VIDEO_SIMULATE_BROKEN_DECODER | CK_VIDEO_SIMULATE_LOST_FRAME);
+	ck_video_core_reset(core);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	ck_video_core_free(core);
+}
+
+static void test_reset_stops_waiting(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	fake.script[1] = CK_VIDEO_DECODE_BROKEN;
+	fake.script_count = 2;
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(!sample(core, P_FRAME, sizeof(P_FRAME)));
+	CHECK_REFUSED(core, fake, P_FRAME);
+	// A new session starts clean, from its own header and IDR.
+	ck_video_core_reset(core);
+	stats_of(core);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample(core, IDR_FRAME, sizeof(IDR_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.keyframe_waits == 0 && stats.frames_waiting == 0);
+	ck_video_core_free(core);
+}
+
 // Random and cut buffers after a real header: nothing may crash, and the decoder only gets well-formed AVCC.
 static void test_garbage(void)
 {
@@ -482,8 +681,22 @@ static uint8_t *read_file(const char *path, size_t *size)
 	return buf;
 }
 
-// Every frame of the capture must reach the decoder, whole and once.
-static int replay(const char *in_path, const char *out_path)
+static void add_stats(CKVideoCoreStats *sum, const CKVideoCoreStats *s)
+{
+	sum->frames_decoded += s->frames_decoded;
+	sum->frames_failed += s->frames_failed;
+	sum->frames_skipped += s->frames_skipped;
+	sum->frames_waiting += s->frames_waiting;
+	sum->keyframe_waits += s->keyframe_waits;
+	sum->configures += s->configures;
+	sum->decoder_broken += s->decoder_broken;
+}
+
+// Without breaks, every frame of the capture must reach the decoder, whole
+// and once. With them (on every EVERY-th frame, unless the decoder is
+// already waiting), each frame must do what the recovery promises: a break loses that frame, the frames after it
+// wait, and the next keyframe brings the picture back.
+static int replay(const char *in_path, const char *out_path, unsigned every, const char *kept_path)
 {
 	size_t size = 0;
 	uint8_t *buf = read_file(in_path, &size);
@@ -496,7 +709,12 @@ static int replay(const char *in_path, const char *out_path)
 	CKVideoCore *core = fake_core(&fake);
 	fake.out = fopen(out_path, "wb");
 	CHECK(fake.out != NULL);
-	size_t pos = 0, frames = 0, refused = 0;
+	FILE *kept = kept_path ? fopen(kept_path, "w") : NULL;
+	CHECK(!kept_path || kept);
+	size_t pos = 0, frames = 0, refused = 0, keyframes = 0, recoveries = 0;
+	bool break_asked = false, waiting = false;
+	CKVideoCoreStats total;
+	memset(&total, 0, sizeof(total));
 	const uint8_t *au;
 	size_t au_size;
 	while(fake.out && ck_h264_next_access_unit(buf, size, &pos, &au, &au_size))
@@ -504,28 +722,65 @@ static int replay(const char *in_path, const char *out_path)
 		CKH264FrameInfo info;
 		ck_h264_annexb_to_avcc(au, au_size, 0, NULL, 0, &info);
 		bool has_slice = (info.nal_types & (CK_H264_NAL_BIT(CK_H264_NAL_SLICE) | CK_H264_NAL_BIT(CK_H264_NAL_IDR))) != 0;
-		frames += has_slice;
-		refused += !ck_video_core_sample(core, au, au_size, 0, false);
+		bool idr = (info.nal_types & CK_H264_NAL_BIT(CK_H264_NAL_IDR)) != 0;
+		if(has_slice && every && frames > 0 && frames % every == 0 && !waiting)
+		{
+			ck_video_core_simulate(core, CK_VIDEO_SIMULATE_BROKEN_DECODER);
+			break_asked = true;
+		}
+		bool taken = ck_video_core_sample(core, au, au_size, 0, false);
+		CKVideoCoreStats s = stats_of(core);
+		add_stats(&total, &s);
+		if(!has_slice)
+			continue;
+		refused += !taken;
+		keyframes += idr;
+		if(taken && kept)
+			fprintf(kept, "%zu\n", frames);
+
+		// What this frame had to do, by the rules above.
+		bool reaches_decoder = !waiting || idr;
+		if(reaches_decoder && break_asked)
+		{
+			CHECK(!taken && s.decoder_broken == 1 && s.frames_failed == 1);
+			break_asked = false;
+			waiting = true;
+		}
+		else if(reaches_decoder)
+		{
+			CHECK(taken && s.frames_decoded == 1);
+			recoveries += waiting;
+			waiting = false;
+		}
+		else
+			CHECK(!taken && s.frames_waiting == 1);
+		frames++;
 	}
-	CKVideoCoreStats stats = stats_of(core);
 	ck_video_core_free(core);
 	if(fake.out)
 		CHECK(fclose(fake.out) == 0);
+	if(kept)
+		CHECK(fclose(kept) == 0);
 	free(buf);
-	printf("%s: %zu frames, %u decoded, %zu refused, %u decoder(s) made, %d malformed\n", in_path, frames,
-		stats.frames_decoded, refused, stats.configures, fake.bad_frames);
-	CHECK(frames > 0 && stats.frames_decoded == frames && refused == 0);
-	CHECK(stats.frames_failed == 0 && stats.frames_skipped == 0 && fake.bad_frames == 0);
+	printf("%s: %zu frames, %u decoded, %zu refused (%u decoder(s) broken, %u waiting for a keyframe), %zu recovered "
+		"at %zu keyframe(s), %u decoder(s) made, %d malformed\n", in_path, frames, total.frames_decoded, refused,
+		total.decoder_broken, total.frames_waiting, recoveries, keyframes, total.configures, fake.bad_frames);
+	CHECK(frames > 0 && total.frames_decoded + total.frames_failed + total.frames_waiting == frames);
+	CHECK(total.frames_skipped == 0 && fake.bad_frames == 0 && fake.frames_without_decoder == 0);
+	if(!every)
+		CHECK(total.frames_decoded == frames && refused == 0);
 	return failures ? 1 : 0;
 }
 
 int main(int argc, char **argv)
 {
 	if(argc == 4 && strcmp(argv[1], "replay") == 0)
-		return replay(argv[2], argv[3]);
+		return replay(argv[2], argv[3], 0, NULL);
+	if(argc == 6 && strcmp(argv[1], "replay") == 0 && atoi(argv[4]) > 0)
+		return replay(argv[2], argv[3], (unsigned)atoi(argv[4]), argv[5]);
 	if(argc != 1)
 	{
-		fprintf(stderr, "usage: %s [replay IN.h264 OUT.h264]\n", argv[0]);
+		fprintf(stderr, "usage: %s [replay IN.h264 OUT.h264 [EVERY KEPT]]\n", argv[0]);
 		return 2;
 	}
 
@@ -539,6 +794,13 @@ int main(int argc, char **argv)
 	test_large_frame();
 	test_stats();
 	test_reset();
+	test_new_decoder_waits_for_keyframe();
+	test_broken_decoder_waits_for_keyframe();
+	test_failed_keyframe();
+	test_failed_p_frame_keeps_going();
+	test_new_parameters_wait_for_keyframe();
+	test_simulate();
+	test_reset_stops_waiting();
 	test_garbage();
 	test_threads();
 

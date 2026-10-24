@@ -24,6 +24,7 @@ static bool has_slice(const uint8_t *au, size_t size)
 @interface CKVCapturePlayer ()
 @property (atomic, readwrite) NSUInteger loops;
 @property (atomic, readwrite) NSUInteger refused;
+@property (atomic, readwrite) NSUInteger keyframesSent;
 @end
 
 @implementation CKVCapturePlayer
@@ -121,14 +122,17 @@ static bool has_slice(const uint8_t *au, size_t size)
 	mach_timebase_info(&timebase);
 	uint64_t period = (uint64_t)(1000000000ull / CKV_FPS) * timebase.denom / timebase.numer;
 	uint64_t deadline = mach_absolute_time();
+	unsigned refused_in_a_row = 0;
 	while(!_stopping)
 	{
 		size_t pos = 0;
 		const uint8_t *au;
 		size_t au_size;
+		bool ended = true;
 		while(!_stopping && ck_h264_next_access_unit(_bytes, _byteCount, &pos, &au, &au_size))
 		{
-			if(has_slice(au, au_size))
+			bool frame = has_slice(au, au_size);
+			if(frame)
 			{
 				deadline += period;
 				uint64_t now = mach_absolute_time();
@@ -137,10 +141,24 @@ static bool has_slice(const uint8_t *au, size_t size)
 				else
 					deadline = now;
 			}
-			if(!ck_video_sink_sample_cb((uint8_t *)au, au_size, 0, false, _sink))
+			if(ck_video_sink_sample_cb((uint8_t *)au, au_size, 0, false, _sink))
+				refused_in_a_row = 0;
+			else
+			{
 				self.refused++;
+				refused_in_a_row += frame;
+			}
+			if(refused_in_a_row >= CKV_KEYFRAME_AFTER)
+			{
+				refused_in_a_row = 0;
+				self.keyframesSent++;
+				printf("CKVCapturePlayer: %u cuadros rechazados seguidos, vuelvo al keyframe del inicio\n",
+					CKV_KEYFRAME_AFTER);
+				ended = false;
+				break;
+			}
 		}
-		if(!_stopping)
+		if(!_stopping && ended)
 			self.loops++;
 	}
 }

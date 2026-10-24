@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// A3.2: the plain C half of CKVideoSink (contract C2, CKVideoSink.h). It
-// takes what the core hands the sink, turns it into what a hardware decoder
-// wants with ck_h264.c (AVCC frames, and the SPS and PPS apart), decides
-// when the decoder must be made again and which frames go to it, and keeps
-// the counters behind ck_video_sink_take_stats(). The decoder sits behind
+// A3.2 and A3.3: the plain C half of CKVideoSink (contract C2,
+// CKVideoSink.h). It takes what the core hands the sink, turns it into what a
+// hardware decoder wants with ck_h264.c (AVCC frames, and the SPS and PPS
+// apart), decides when the decoder must be made again and which frames go to
+// it, and keeps the counters behind ck_video_sink_take_stats().
+//
+// Recovery (A3.3): a frame the decoder rejects is lost for the core, which
+// points the next frames at older pictures. A decoder that is new, broke, or
+// lost its keyframe has no pictures to refer to, so it takes nothing but a
+// keyframe (an IDR, or a frame of I slices only); the frames refused
+// meanwhile make the core ask the console for one. The decoder sits behind
 // CKVideoDecoder: VideoToolbox in CKVideoSink.m, a fake in the Linux tests
 // (ios/tests/ck_video_tests.c).
 //
@@ -63,6 +69,11 @@ typedef struct ck_video_core_stats_t
 	uint32_t frames_failed;
 	/** Frames that never reached decode(): no SPS and PPS yet, no decoder, or no NAL unit in them. */
 	uint32_t frames_skipped;
+	/** Frames refused while the decoder waited for a keyframe. */
+	uint32_t frames_waiting;
+	/** Times the decoder waited for a keyframe and refused frames meanwhile, and the longest wait in microseconds. */
+	uint32_t keyframe_waits;
+	uint32_t keyframe_wait_us_max;
 	/** Frames the core reported lost before the ones it handed over. */
 	uint32_t frames_lost;
 	/** Time spent in decode(), in microseconds, over frames_decoded + frames_failed. */
@@ -96,6 +107,21 @@ bool ck_video_core_sample(CKVideoCore *core, const uint8_t *buf, size_t buf_size
 
 /** Drops the decoder and forgets the SPS and PPS, e.g. before a new session. */
 void ck_video_core_reset(CKVideoCore *core);
+
+/** Failures to simulate, for trying the recovery against a real console. */
+typedef enum ck_video_simulation_t
+{
+	/** The decoder rejects the frame (CK_VIDEO_DECODE_FAILED). */
+	CK_VIDEO_SIMULATE_LOST_FRAME = 1 << 0,
+	/** The decoder breaks on the frame (CK_VIDEO_DECODE_BROKEN), as when VideoToolbox invalidates it. */
+	CK_VIDEO_SIMULATE_BROKEN_DECODER = 1 << 1,
+} CKVideoSimulation;
+
+/**
+ * Makes the next frame that would reach decode() fail as asked, without
+ * calling it: the sink then recovers as from a real failure. Any thread.
+ */
+void ck_video_core_simulate(CKVideoCore *core, CKVideoSimulation what);
 
 /** The counters since the previous call, then resets them. */
 void ck_video_core_take_stats(CKVideoCore *core, CKVideoCoreStats *stats);
