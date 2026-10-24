@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// ckhidprobe (A5.7): lists every HID device iOS publishes and, when one is a
-// DualSense, opens it with IOHIDManager and prints what ck_ds5 makes of its
-// reports, the same way ds5_hidraw does on Linux. It is the test for both
+// ckhidprobe (A5.7, A5.8): lists every HID device iOS publishes and, when one
+// is a DualSense, opens it with IOHIDManager and prints what ck_ds5 makes of
+// its reports, the same way ds5_hidraw does on Linux. It is the test for both
 // direct paths: USB through the camera adapter, and Bluetooth once ckbtfilter
 // lets BTServer pair the pad. Run it as root over SSH:
 //
@@ -10,8 +10,10 @@
 //   ckhidprobe -x     # also print the bytes of every report that gets a line
 //   ckhidprobe -r     # first list the HID and Bluetooth services in the IORegistry
 //   ckhidprobe -s     # read the reports ckbtfilter shares instead (see ck_ds5_shared.h)
+//   ckhidprobe -c     # read the pad through CKDS5Source, as the app does (A5.8)
 
 #include "ck_ds5_shared.h"
+#include "ck_ds5_source.h"
 #include "ck_iohid.h"
 #include "ds5_print.h"
 
@@ -21,6 +23,8 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 static bool hex;
@@ -329,6 +333,81 @@ static int follow_shared(void)
 	}
 }
 
+static uint64_t now_us(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+}
+
+// -c: the input source the app hands CKSession (contract C4), polled every
+// CK_INPUT_POLL_INTERVAL_MS like CKSession does. Prints the state when it
+// changes and, every 5 s, what the polls cost.
+static int follow_source(void)
+{
+	static CKDS5Source source;
+	ck_ds5_source_init(&source, CK_DS5_SHARED_PATH);
+	CKInputSource input = ck_ds5_source_input(&source);
+	printf("Polling the \"%s\" input source every %d ms, like the app. Press buttons, move the sticks, touch the "
+		"touchpad; Ctrl-C to quit.\n", input.name, CK_INPUT_POLL_INTERVAL_MS);
+	fflush(stdout);
+
+	ChiakiControllerState state, last;
+	chiaki_controller_state_set_idle(&last);
+	bool had_pad = false;
+	uint32_t maps = 0;
+	uint32_t kinds[CK_DS5_REPORT_BT_FULL + 1] = { 0 };
+	unsigned polls = 0, polls_with_pad = 0;
+	uint64_t slowest = 0, window_start = now_us();
+	struct timespec interval = { 0, CK_INPUT_POLL_INTERVAL_MS * 1000000L };
+	for(;;)
+	{
+		uint64_t t = now_us();
+		bool has_pad = input.poll(input.user, &state);
+		uint64_t took = now_us() - t;
+		if(took > slowest)
+			slowest = took;
+		polls++;
+		if(source.maps != maps)
+		{
+			printf("mapped %s%s\n", CK_DS5_SHARED_PATH, maps ? " again: BTServer made a new one" : "");
+			maps = source.maps;
+		}
+		if(has_pad != had_pad)
+		{
+			printf(has_pad ? "pad connected\n" : "no pad\n");
+			had_pad = has_pad;
+		}
+		if(has_pad)
+		{
+			polls_with_pad++;
+			if(ds5_state_changed(&state, &last))
+			{
+				ds5_print_state(ds5_kind_name(source.kind), &state);
+				last = state;
+			}
+		}
+		if(t - window_start >= 5000000u)
+		{
+			if(!source.shared)
+				printf("-- no %s yet: it appears when BTServer starts with ckbtfilter.\n", CK_DS5_SHARED_PATH);
+			else
+				printf("-- 5 s: %u polls, pad in %u; new reports: bt-full %u, bt-simple %u, bad-crc %u, unknown %u; "
+					"slowest poll %llu us\n", polls, polls_with_pad,
+					source.kinds[CK_DS5_REPORT_BT_FULL] - kinds[CK_DS5_REPORT_BT_FULL],
+					source.kinds[CK_DS5_REPORT_BT_SIMPLE] - kinds[CK_DS5_REPORT_BT_SIMPLE],
+					source.kinds[CK_DS5_REPORT_BAD_CRC] - kinds[CK_DS5_REPORT_BAD_CRC],
+					source.kinds[CK_DS5_REPORT_UNKNOWN] - kinds[CK_DS5_REPORT_UNKNOWN], (unsigned long long)slowest);
+			memcpy(kinds, source.kinds, sizeof(kinds));
+			polls = polls_with_pad = 0;
+			slowest = 0;
+			window_start = t;
+		}
+		fflush(stdout);
+		nanosleep(&interval, NULL);
+	}
+}
+
 static void waiting_hint(CFRunLoopTimerRef timer, void *info)
 {
 	(void)timer;
@@ -342,7 +421,7 @@ static void waiting_hint(CFRunLoopTimerRef timer, void *info)
 
 int main(int argc, char **argv)
 {
-	bool registry = false, from_shared = false;
+	bool registry = false, from_shared = false, from_source = false;
 	for(int i = 1; i < argc; i++)
 	{
 		if(strcmp(argv[i], "-x") == 0)
@@ -351,9 +430,13 @@ int main(int argc, char **argv)
 			registry = true;
 		else if(strcmp(argv[i], "-s") == 0)
 			from_shared = true;
+		else if(strcmp(argv[i], "-c") == 0)
+			from_source = true;
 	}
 	if(registry)
 		list_registry();
+	if(from_source)
+		return follow_source();
 	if(from_shared)
 		return follow_shared();
 

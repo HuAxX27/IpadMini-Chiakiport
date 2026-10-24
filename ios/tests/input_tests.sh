@@ -4,8 +4,9 @@
 #
 #   1. ds5_test (DualSense report parser), hci_filter_test (BTServer HCI
 #      filter), ds5_shared_test (the report BTServer shares, with a writer and
-#      a reader thread racing) and ckbtfilter_test (the BTServer tweak's log
-#      and shared reports, built with a stand-in for Substrate), with
+#      a reader thread racing), ds5_source_test (the app's input source over
+#      that report) and ckbtfilter_test (the BTServer tweak's log, shared
+#      reports and output reports, built with a stand-in for Substrate), with
 #      AddressSanitizer and UBSan when the compiler has them.
 #   2. The same tests built for armv7 (Cortex-A9 and a 32-bit size_t, like the
 #      iPad mini's A5) and run under qemu-arm.
@@ -22,9 +23,13 @@ CFLAGS=(-std=c11 -Wall -Wextra -Wpedantic -Werror -I"$ROOT/lib/include" -I"$ROOT
 DS5_SRC=("$ROOT/ios/tests/ds5_test.c" "$ROOT/ios/Input/ck_ds5.c" "$ROOT/lib/src/controller.c")
 HCI_SRC=("$ROOT/ios/tests/hci_filter_test.c" "$ROOT/ios/Input/ck_hci_filter.c")
 SHARED_SRC=("$ROOT/ios/tests/ds5_shared_test.c" "$ROOT/ios/Input/ck_ds5_shared.c")
-TWEAK_SRC=("$ROOT/ios/tests/ckbtfilter_test.c" "$ROOT/ios/Input/ck_hci_filter.c" "$ROOT/ios/Input/ck_ds5_shared.c")
-# The tweak's test writes its log and shared report under build-ios-tests, never
-# /tmp. Substrate's API takes functions as void *, which -Wpedantic rejects.
+SOURCE_SRC=("$ROOT/ios/tests/ds5_source_test.c" "$ROOT/ios/Input/ck_ds5_source.c" "$ROOT/ios/Input/ck_ds5_shared.c"
+	"$ROOT/ios/Input/ck_ds5.c" "$ROOT/lib/src/controller.c")
+TWEAK_SRC=("$ROOT/ios/tests/ckbtfilter_test.c" "$ROOT/ios/Input/ck_hci_filter.c" "$ROOT/ios/Input/ck_ds5_shared.c"
+	"$ROOT/ios/Input/ck_ds5.c")
+# The tweak's and the source's tests write their files under build-ios-tests,
+# never /tmp. Substrate's API takes functions as void *, which -Wpedantic rejects.
+SOURCE_FLAGS=(-DSOURCE_PATH="\"$BUILD/ds5_source_test.report\"")
 TWEAK_FLAGS=(-Wno-pedantic -D_DEFAULT_SOURCE -I"$ROOT/ios/tests/fakes"
 	-DLOG_PATH="\"$BUILD/ckbtfilter_test.log\"" -DSHARED_PATH="\"$BUILD/ckds5.report\"")
 CC="${CC:-cc}"
@@ -40,10 +45,12 @@ fi
 "$CC" "${CFLAGS[@]}" "${SAN[@]}" "${DS5_SRC[@]}" -o "$BUILD/ds5_test"
 "$CC" "${CFLAGS[@]}" "${SAN[@]}" "${HCI_SRC[@]}" -o "$BUILD/hci_filter_test"
 "$CC" "${CFLAGS[@]}" "${SAN[@]}" -pthread "${SHARED_SRC[@]}" -o "$BUILD/ds5_shared_test"
-"$CC" "${CFLAGS[@]}" "${SAN[@]}" "${TWEAK_FLAGS[@]}" "${TWEAK_SRC[@]}" -o "$BUILD/ckbtfilter_test"
+"$CC" "${CFLAGS[@]}" "${SAN[@]}" "${SOURCE_FLAGS[@]}" "${SOURCE_SRC[@]}" -o "$BUILD/ds5_source_test"
+"$CC" "${CFLAGS[@]}" "${SAN[@]}" -pthread "${TWEAK_FLAGS[@]}" "${TWEAK_SRC[@]}" -o "$BUILD/ckbtfilter_test"
 "$BUILD/ds5_test"
 "$BUILD/hci_filter_test"
 "$BUILD/ds5_shared_test"
+"$BUILD/ds5_source_test"
 rm -f "$BUILD/ckbtfilter_test.log" "$BUILD/ckds5.report"
 "$BUILD/ckbtfilter_test"
 
@@ -53,10 +60,12 @@ if command -v arm-linux-gnueabihf-gcc >/dev/null && command -v qemu-arm >/dev/nu
 	"${ARM[@]}" "${DS5_SRC[@]}" -o "$BUILD/ds5_test_armv7"
 	"${ARM[@]}" "${HCI_SRC[@]}" -o "$BUILD/hci_filter_test_armv7"
 	"${ARM[@]}" -pthread "${SHARED_SRC[@]}" -o "$BUILD/ds5_shared_test_armv7"
-	"${ARM[@]}" "${TWEAK_FLAGS[@]}" "${TWEAK_SRC[@]}" -o "$BUILD/ckbtfilter_test_armv7"
+	"${ARM[@]}" "${SOURCE_FLAGS[@]}" "${SOURCE_SRC[@]}" -o "$BUILD/ds5_source_test_armv7"
+	"${ARM[@]}" -pthread "${TWEAK_FLAGS[@]}" "${TWEAK_SRC[@]}" -o "$BUILD/ckbtfilter_test_armv7"
 	qemu-arm -cpu cortex-a9 "$BUILD/ds5_test_armv7"
 	qemu-arm -cpu cortex-a9 "$BUILD/hci_filter_test_armv7"
 	qemu-arm -cpu cortex-a9 "$BUILD/ds5_shared_test_armv7"
+	qemu-arm -cpu cortex-a9 "$BUILD/ds5_source_test_armv7"
 	rm -f "$BUILD/ckbtfilter_test.log" "$BUILD/ckds5.report"
 	qemu-arm -cpu cortex-a9 "$BUILD/ckbtfilter_test_armv7"
 else

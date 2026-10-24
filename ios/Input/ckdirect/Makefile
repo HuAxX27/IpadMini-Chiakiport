@@ -1,11 +1,13 @@
-# ckdirect (A5.7): the two pieces for connecting the DualSense straight to the
-# iPad, in one .deb for a jailbroken iOS 9 device.
+# ckdirect (A5.7, A5.8): the two pieces for connecting the DualSense straight
+# to the iPad, in one .deb for a jailbroken iOS 9 device.
 #
 #   ckbtfilter   Substrate filter inside BTServer: makes the pad look like a
-#                keyboard while pairing, so iOS lets it connect, and logs the
-#                Bluetooth traffic it sees to /tmp/ckbtfilter.log.
-#   ckhidprobe   command-line tool: lists the HID devices and reads the
-#                DualSense with IOHIDManager.
+#                keyboard while pairing, so iOS lets it connect, shares its
+#                input reports in /tmp/ckds5.report, switches it to the full
+#                report, and logs the Bluetooth traffic it sees to
+#                /tmp/ckbtfilter.log.
+#   ckhidprobe   command-line tool: reads the DualSense with IOHIDManager, from
+#                the shared reports (-s), or through CKDS5Source like the app (-c).
 #
 #   make package FINALPACKAGE=1    # .deb in packages/
 TARGET := iphone:clang:9.3:9.0

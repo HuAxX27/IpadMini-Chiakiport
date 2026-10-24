@@ -36,6 +36,12 @@ extern "C" {
 #define CK_HCI_EVENT_INQUIRY_RESULT_WITH_RSSI 0x22
 #define CK_HCI_EVENT_EXTENDED_INQUIRY_RESULT 0x2f
 
+/** The controller's count of ACL packets it is done with, which the host's flow control runs on. */
+#define CK_HCI_EVENT_NUMBER_OF_COMPLETED_PACKETS 0x13
+
+/** ACL packet boundary flags, from host to controller: the first fragment of an L2CAP frame. */
+#define CK_HCI_ACL_START 0x2
+
 /** Class of device of the DualSense and the DualShock 4: peripheral, gamepad. */
 #define CK_HCI_COD_DUALSENSE 0x002508
 /** What the filter turns it into: peripheral, keyboard. */
@@ -86,6 +92,13 @@ typedef struct ck_hci_filter_callbacks_t
 	 * result with exactly one response. May be NULL.
 	 */
 	void (*device_class)(void *user, const CKHciDeviceClass *device);
+	/**
+	 * Only with rewrite set: called for each connection in a Number Of
+	 * Completed Packets event while its count is still in the caller's
+	 * buffer. The count it returns goes on in place of the controller's.
+	 * May be NULL.
+	 */
+	uint16_t (*completed)(void *user, uint16_t handle, uint16_t count);
 } CKHciFilterCallbacks;
 
 /** Follows one direction of the stream. All state lives here; no allocation. */
@@ -114,8 +127,15 @@ struct ck_hci_filter_t
 	uint8_t *cod_minor_at;
 	bool cod_split;
 
+	// For a Number Of Completed Packets event that may be rewritten: where the
+	// low byte of the count being read sits in the current buffer, or NULL.
+	bool completed_event;
+	uint8_t *count_low_at;
+
 	uint32_t packets;
 	uint32_t rewrites;
+	/** Completed packet counts that arrived split across two reads, so could not be rewritten. */
+	uint32_t completed_split;
 };
 
 void ck_hci_filter_init(CKHciFilter *filter, bool rewrite, const CKHciFilterCallbacks *callbacks);
@@ -125,6 +145,17 @@ void ck_hci_filter_init(CKHciFilter *filter, bool rewrite, const CKHciFilterCall
  * With rewrite set it may change bytes inside buf; it never changes len.
  */
 void ck_hci_filter_feed(CKHciFilter *filter, uint8_t *buf, size_t len);
+
+/** True between two packets: what goes next in the stream starts a new packet. */
+bool ck_hci_filter_between_packets(const CKHciFilter *filter);
+
+/**
+ * Writes an H4 ACL packet holding one whole L2CAP frame (type, handle and
+ * flags, ACL length, L2CAP length, channel ID, data) into out. Returns its
+ * size, or 0 when it does not fit in size bytes.
+ */
+size_t ck_hci_acl_frame(uint8_t *out, size_t size, uint16_t handle, uint8_t flags, uint16_t cid, const uint8_t *data,
+	size_t len);
 
 /** True for a peripheral whose minor class is gamepad or joystick (and not keyboard or pointer). */
 bool ck_hci_cod_is_gamepad(uint32_t cod);

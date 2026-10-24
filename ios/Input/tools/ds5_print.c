@@ -24,7 +24,7 @@ static const struct { uint32_t bit; const char *name; } button_names[] = {
 	{ CHIAKI_CONTROLLER_BUTTON_PS, "PS" },
 };
 
-static const char *kind_name(CKDS5ReportKind kind)
+const char *ds5_kind_name(CKDS5ReportKind kind)
 {
 	switch(kind)
 	{
@@ -36,9 +36,9 @@ static const char *kind_name(CKDS5ReportKind kind)
 	}
 }
 
-static void print_state(CKDS5ReportKind kind, const ChiakiControllerState *s)
+void ds5_print_state(const char *label, const ChiakiControllerState *s)
 {
-	printf("%-9s", kind_name(kind));
+	printf("%-9s", label);
 	for(size_t i = 0; i < sizeof(button_names) / sizeof(button_names[0]); i++)
 		if(s->buttons & button_names[i].bit)
 			printf(" %s", button_names[i].name);
@@ -57,7 +57,14 @@ static bool stick_moved(int16_t a, int16_t b)
 	return d > 2048 || d < -2048;
 }
 
-static bool state_changed(const ChiakiControllerState *a, const ChiakiControllerState *b)
+// A finger counts as moved after about a twentieth of the touchpad's width.
+static bool touch_moved(uint16_t a, uint16_t b)
+{
+	int d = (int)a - (int)b;
+	return d > 96 || d < -96;
+}
+
+bool ds5_state_changed(const ChiakiControllerState *a, const ChiakiControllerState *b)
 {
 	if(a->buttons != b->buttons || a->l2_state != b->l2_state || a->r2_state != b->r2_state)
 		return true;
@@ -65,8 +72,13 @@ static bool state_changed(const ChiakiControllerState *a, const ChiakiController
 		|| stick_moved(a->right_x, b->right_x) || stick_moved(a->right_y, b->right_y))
 		return true;
 	for(int i = 0; i < CHIAKI_CONTROLLER_TOUCHES_MAX; i++)
+	{
 		if(a->touches[i].id != b->touches[i].id)
 			return true;
+		if(a->touches[i].id >= 0 && (touch_moved(a->touches[i].x, b->touches[i].x)
+			|| touch_moved(a->touches[i].y, b->touches[i].y)))
+			return true;
+	}
 	return false;
 }
 
@@ -85,9 +97,9 @@ CKDS5ReportKind ds5_printer_feed(DS5Printer *printer, const uint8_t *report, siz
 	printer->counts[kind]++;
 	printer->reports++;
 
-	if(kind == CK_DS5_REPORT_UNKNOWN || kind == CK_DS5_REPORT_BAD_CRC || state_changed(&printer->state, &printer->last))
+	if(kind == CK_DS5_REPORT_UNKNOWN || kind == CK_DS5_REPORT_BAD_CRC || ds5_state_changed(&printer->state, &printer->last))
 	{
-		print_state(kind, &printer->state);
+		ds5_print_state(ds5_kind_name(kind), &printer->state);
 		if(printer->hex)
 		{
 			printf("  %zu bytes:", len);
