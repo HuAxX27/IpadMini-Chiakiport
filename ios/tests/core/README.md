@@ -56,3 +56,7 @@ Cambios respecto a chiaki-ng, para que corran contra nuestro core:
 - **`chiaki_ecdh_set_local_key` con mbedTLS tiraba la llave recibida** y generaba otra al azar. Se arregló en `lib/src/ecdh.c`. La sesión no llama a esa función, así que no afectaba el streaming, pero sin el arreglo la prueba con valores conocidos (`gkcrypt/ecdh`) no podía correr con mbedTLS.
 - **`chiaki-lib` no enlaza `libm`** aunque `orientation.c` usa `sqrt()`. En iOS `libm` es parte de `libSystem`, así que solo `link_check` en Linux la agrega.
 - **El tamaño de `ChiakiSession` depende de dos definiciones**: `CHIAKI_LIB_ENABLE_MBEDTLS` (cambia `ChiakiECDH`) y `CHIAKI_DISABLE_HOLEPUNCH`. Todo lo que incluya los headers del core, como `CKSession`, tiene que compilarse con las mismas que el core, o las estructuras no coinciden. En x86_64 la sesión mide 5072 bytes con OpenSSL y 6064 con mbedTLS.
+
+## La app (A6)
+
+Las pruebas `ui_*.c` son del C portable de la app (`ios/UI/`, dueño A6). Viven aquí para correr con el mismo core y munit en las tres configuraciones. Qué cubre cada una está en `ios/UI/README.md`.
