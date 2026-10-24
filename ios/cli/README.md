@@ -1,4 +1,4 @@
-# ckctl y cksession (A2.4 a A2.6)
+# ckctl y cksession (A2.4 a A2.7)
 
 Herramientas de línea de comandos para el iPad, por SSH. `ckctl` busca, registra y despierta la PS5: es la prueba del hito espolón (P2), que la PS5 se encienda desde el iPad. `cksession` abre y cierra sesiones de streaming con ella a través de `CKSession`, la clase que usará la app. Dueño: A2.
 
@@ -70,6 +70,8 @@ Imprime cada cambio de estado (`conectando`, `transmitiendo`, `detenida`), la ra
 
 Después de cerrar una sesión, la PS5 tarda unos segundos en soltarla: mientras tanto contesta que Remote Play ya está en uso (`0x80108b10`). En la primera prueba en el iPad tardó entre 6 y 9 s. Por eso, si una ronda recibe esa respuesta, `cksession` vuelve a pedir la sesión cada 2 s, hasta 10 veces, y dice cuántos segundos después de cerrar la anterior la aceptó.
 
+Después de cada ronda dice qué video mandó la consola, leído del encabezado (SPS) que llega antes de los cuadros: el códec, el perfil, el nivel y el tamaño, por ejemplo `video: H.264 Main, nivel 3.2, 960x540`, que es lo que mandó la PS5 en la primera prueba en el iPad. Si el tamaño no es el que pidió lo dice, y si el A5 no lo puede decodificar (H.265, 10 bits, entrelazado, más de 1080p o más del nivel 4.1) también. La salida es 0 solo si todas las rondas transmitieron H.264 que el A5 decodifica.
+
 Por ahora no muestra el video ni toca el audio: los cuenta. La pantalla y el sonido llegan con la app (A3, A4 y A6).
 
 ## Compilar
@@ -96,8 +98,8 @@ Reporta lo que imprimió cada paso (sin el Account ID ni el PIN) y, si algo fall
 ## Probar la sesión en el iPad (A2.6)
 
 1. Con la PS5 registrada (pasos de arriba) y encendida: `ckctl wakeup -w 60`.
-2. `cksession -t 10`. Debe pasar por `conectando` y `transmitiendo`, imprimir unos 30 cuadros por segundo durante 10 s y terminar con `detenida`.
-3. `cksession -n 20 -t 5`. Debe decir `Transmitió en 20 de 20 rondas.`, y la memoria después de cada ronda debe quedarse más o menos igual.
+2. `cksession -t 10`. Debe pasar por `conectando` y `transmitiendo`, imprimir unos 30 cuadros por segundo durante 10 s, terminar con `detenida` y decir `video: H.264 ..., 960x540` (A2.7).
+3. `cksession -n 20 -t 5`. Debe decir `Transmitió en 20 de 20 rondas, con H.264 que el A5 decodifica en 20.`, y la memoria después de cada ronda debe quedarse más o menos igual.
 
 Reporta la salida de los dos comandos. Si una ronda no llega a `transmitiendo`, repite con `CK_LOG_VERBOSE=1 cksession -t 10` y guarda la salida.
 
@@ -110,5 +112,7 @@ Reporta la salida de los dos comandos. Si una ronda no llega a `transmitiendo`, 
 `ck_consoles` (`ios/tests/core/consoles.c`) corre la API y los comandos de `ckctl` contra la PS5 falsa de `ios/tests/fakes/fake_ps5.c`, en 127.0.0.1, con OpenSSL, con mbedTLS y en armv7 bajo `qemu-arm`. La falsa contesta la búsqueda y la señal de despertar como una PS5, y el registro con el mismo cifrado del core: descifra la petición con el PIN, revisa el Account ID y responde con llaves inventadas. Cubre el registro que funciona, cada error de la tabla de arriba, cancelar un registro, despertar con la llave correcta y con otra, y la lista de consolas que cambia cuando una se enciende o deja de contestar. Con el registro guardado: que `regist` lo guarde o, si no puede, imprima las llaves sin tocar el archivo; que `wakeup` despierte sin llave, elija entre varias consolas y encuentre a una que cambió de IP; `discover`, `list` y `forget`.
 
 `ck_session` (`ios/tests/core/session.c`) prueba `ios/Bridge/ck_session.c`, la mitad en C de `CKSession`, contra la misma PS5 falsa, que contesta la petición de sesión como una PS5 (la acepta, dice que Remote Play está en uso, no contesta o cuelga) pero no transmite. Cubre cada forma de terminar, detener mientras conecta, volver a arrancar la misma sesión, el hilo de entrada que lee los controles a 125 Hz, y abrir y cerrar 20 veces sin que crezcan los sockets, los hilos ni la memoria. Con ASan y `--no-fork`, LeakSanitizer revisa además que no quede memoria sin liberar.
+
+`ck_video_info` (`ios/tests/core/video_info.c`) prueba `ios/Bridge/ck_video_info.c`, que lee el encabezado de video, con encabezados de x264 (540p, 720p, 360p, 1080p, entrelazado, 10 bits, 4:2:2 y 4:4:4), uno de x265 y otros escritos a mano para lo que x264 no hace (listas de escalado, `pic_order_cnt_type` 1, bytes de prevención de emulación) o está roto. `ck_session` revisa además que el launch spec que el core le manda a la PS5 pida `avc` con el tamaño y los cuadros por segundo de los ajustes.
 
 `ck_registry` (`ios/tests/core/registry.c`) prueba el plist en disco: ida y vuelta, carpetas que no existen, permisos `0600`, un plist como los que escribe Foundation (con llaves de la app, comentarios y datos en varias líneas) y 25 archivos dañados que debe rechazar. `ck_registry_plistlib` (`check_registry_plist.py`) cruza el formato con `plistlib` de Python: lee lo que escribe `ck_registry`, le da a `ck_registry` lo que escribe `plistlib` y revisa que rechace un plist binario.

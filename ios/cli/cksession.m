@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// cksession (A2.6): opens a streaming session with a registered console
+// cksession (A2.6, A2.7): opens a streaming session with a registered console
 // through CKSession, the class the app uses (contract C1), and closes it, as
 // many times as asked, to try the session on the iPad without the app. Prints
-// every change of state, the metrics once per second and the resident memory
-// after each round. See README.md.
+// every change of state, the metrics once per second, the video the console
+// sent and the resident memory after each round. See README.md.
 
 #import "Bridge/CKSession.h"
 
 #include "Bridge/ck_registry.h"
 #include "Bridge/ck_session.h"
+#include "Bridge/ck_video_info.h"
 
 #include <chiaki/common.h>
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,6 +73,59 @@ static const char *const state_names[] = { "inactiva", "conectando", "transmitie
 }
 
 @end
+
+/** The video header of the round, written by the core's video thread. */
+typedef struct video_watch_t
+{
+	pthread_mutex_t mutex;
+	bool seen;
+	CKVideoInfo info;
+} VideoWatch;
+
+static VideoWatch video_watch = { PTHREAD_MUTEX_INITIALIZER, false, { 0 } };
+
+/** The session's video callback (contract C2): keeps the header, takes every frame. */
+static bool watch_video(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
+{
+	(void)frames_lost;
+	(void)frame_recovered;
+	VideoWatch *watch = user;
+	CKVideoInfo info;
+	if(ck_video_info_parse(buf, buf_size, &info))
+	{
+		pthread_mutex_lock(&watch->mutex);
+		watch->info = info;
+		watch->seen = true;
+		pthread_mutex_unlock(&watch->mutex);
+	}
+	return true;
+}
+
+/** Prints what the console sent and returns whether it is H.264 the A5 decodes. */
+static bool report_video(const ChiakiConnectVideoProfile *asked)
+{
+	pthread_mutex_lock(&video_watch.mutex);
+	bool seen = video_watch.seen;
+	CKVideoInfo info = video_watch.info;
+	pthread_mutex_unlock(&video_watch.mutex);
+	if(!seen)
+	{
+		printf("  video: no llegó el encabezado\n");
+		return false;
+	}
+	if(info.codec != CK_VIDEO_CODEC_H264)
+	{
+		printf("  video: H.265, que el A5 no decodifica\n");
+		return false;
+	}
+	bool decodes = ck_video_info_a5_decodes(&info);
+	printf("  video: H.264 %s, nivel %u.%u, %ux%u", ck_video_info_profile_name(&info),
+		info.level_idc / 10, info.level_idc % 10, (unsigned)info.width, (unsigned)info.height);
+	if(info.width != asked->width || info.height != asked->height)
+		printf(" (pedí %ux%u)", asked->width, asked->height);
+	printf("%s\n", decodes ? "" : "; el A5 no lo decodifica");
+	return decodes;
+}
 
 /** Runs the main run loop, where CKSession delivers, until done() or seconds pass. */
 static void run_until(NSTimeInterval seconds, BOOL (^done)(void))
@@ -219,6 +274,7 @@ int main(int argc, char **argv)
 			ck_resident_kb());
 
 		long streamed = 0;
+		long h264 = 0;
 		NSDate *last_close = nil;
 		for(long round = 1; round <= rounds; round++)
 		{
@@ -240,6 +296,10 @@ int main(int argc, char **argv)
 					runner = [CKSessionRunner new];
 					session = [[CKSession alloc] initWithHost:@(host) registeredHost:&entry->host settings:settings];
 					session.delegate = runner;
+					pthread_mutex_lock(&video_watch.mutex);
+					video_watch.seen = false;
+					pthread_mutex_unlock(&video_watch.mutex);
+					[session setVideoSampleCallback:watch_video user:&video_watch];
 					NSError *error = nil;
 					if(![session start:&error])
 					{
@@ -272,12 +332,16 @@ int main(int argc, char **argv)
 				run_until(5, ^BOOL { return runner.lastState == CKSessionStateStopped && runner.quit; });
 				last_close = [NSDate date];
 				if(runner.streamed)
+				{
 					streamed++;
+					if(report_video(&profile))
+						h264++;
+				}
 			}
 			printf("  memoria después de cerrar: %u KB\n", ck_resident_kb());
 			fflush(stdout);
 		}
-		printf("Transmitió en %ld de %ld rondas.\n", streamed, rounds);
-		return streamed == rounds ? 0 : 1;
+		printf("Transmitió en %ld de %ld rondas, con H.264 que el A5 decodifica en %ld.\n", streamed, rounds, h264);
+		return streamed == rounds && h264 == rounds ? 0 : 1;
 	}
 }

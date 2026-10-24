@@ -11,6 +11,7 @@
 #include "Bridge/ck_session.h"
 #include "fake_ps5.h"
 
+#include <chiaki/launchspec.h>
 #include <chiaki/thread.h>
 #include <chiaki/time.h>
 
@@ -182,6 +183,43 @@ static MunitResult test_video_profile(const MunitParameter params[], void *user)
 	ck_session_video_profile(&settings, &profile);
 	munit_assert_uint(profile.width, ==, 640);
 	munit_assert_uint(profile.bitrate, ==, 2000);
+	return MUNIT_OK;
+}
+
+/** A2.7: what the core puts in the launch spec it sends a PS5, from every profile CKSettings allows. */
+static MunitResult test_launch_spec(const MunitParameter params[], void *user)
+{
+	(void)params;
+	(void)user;
+	static const struct
+	{
+		ChiakiVideoResolutionPreset resolution;
+		ChiakiVideoFPSPreset fps;
+		const char *size;
+		const char *max_fps;
+	} cases[] = {
+		{ CHIAKI_VIDEO_RESOLUTION_PRESET_540p, CHIAKI_VIDEO_FPS_PRESET_30, "\"width\":960,\"height\":540", "\"maxFps\":30," },
+		{ CHIAKI_VIDEO_RESOLUTION_PRESET_360p, CHIAKI_VIDEO_FPS_PRESET_30, "\"width\":640,\"height\":360", "\"maxFps\":30," },
+		{ CHIAKI_VIDEO_RESOLUTION_PRESET_720p, CHIAKI_VIDEO_FPS_PRESET_60, "\"width\":1280,\"height\":720", "\"maxFps\":60," },
+	};
+	uint8_t handshake_key[CHIAKI_HANDSHAKE_KEY_SIZE] = { 0 };
+	for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+	{
+		CKSettings settings;
+		ck_settings_set_default(&settings);
+		settings.resolution = cases[i].resolution;
+		settings.fps = cases[i].fps;
+		ChiakiConnectVideoProfile profile;
+		ck_session_video_profile(&settings, &profile);
+		ChiakiLaunchSpec spec = { CHIAKI_TARGET_PS5_1, 1454, 5, handshake_key, profile.width, profile.height,
+			profile.max_fps, profile.codec, profile.bitrate };
+		char json[2048];
+		munit_assert_int(chiaki_launchspec_format(json, sizeof(json), &spec), >, 0);
+		munit_assert_not_null(strstr(json, cases[i].size));
+		munit_assert_not_null(strstr(json, cases[i].max_fps));
+		munit_assert_not_null(strstr(json, "\"videoCodec\":\"avc\""));
+		munit_assert_not_null(strstr(json, "\"dynamicRange\":\"SDR\""));
+	}
 	return MUNIT_OK;
 }
 
@@ -524,6 +562,7 @@ static MunitResult test_open_close_20(const MunitParameter params[], void *fixtu
 
 static MunitTest tests[] = {
 	TEST("/video_profile", test_video_profile),
+	TEST("/launch_spec", test_launch_spec),
 	TEST("/input_merge", test_input_merge),
 	TEST("/bad_start", test_bad_start),
 	TEST("/resident_kb", test_resident_kb),
