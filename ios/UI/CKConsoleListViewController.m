@@ -236,8 +236,8 @@ static const NSTimeInterval CKWakeTimeout = 45;
 			[self wake:console];
 			break;
 		case CK_CONSOLE_ACTION_PLAY:
-			[self presentViewController:[[CKStreamViewController alloc] initWithService:_service console:console]
-				animated:YES completion:nil];
+			[self presentViewController:[[CKStreamViewController alloc] initWithService:_service console:console
+				settings:_settings.settings] animated:YES completion:nil];
 			break;
 		default:
 			[self explainNoAction:console];

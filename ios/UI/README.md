@@ -12,13 +12,14 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 | `CKMockConsoleService.h`, `.m` | Consolas simuladas (A6.1), para probar cada pantalla sin consola |
 | `ck_ui_regist.h`, `.c` | Al terminar un registro (A6.3): la frase para el usuario y guardarlo encima del archivo de registros |
 | `ck_ui_settings.h`, `.c` | Los ajustes que ofrece la app sobre el modelo de C5 y lo que acepta del archivo |
+| `ck_ui_stream.h`, `.c` | La pantalla de juego (A6.5): por qué terminó una sesión, cuándo volver a pedirla y la línea de métricas |
 | `CKSettingsStore.h`, `.m` | Los ajustes guardados en el iPad (A6.4) |
 | `CKSettingsViewController` | La pantalla de ajustes |
 | `CKConsoleListViewController`, `CKConsoleCell` | La lista de consolas, la primera pantalla |
 | `CKRegistViewController` | El registro: Account ID, PIN y qué corregir si la consola dice que no |
-| `CKStreamViewController` | La pantalla de juego; por ahora, un fondo negro con el gesto para salir |
+| `CKStreamViewController` | La pantalla de juego: la sesión (`CKSession`), el DualSense, el menú y las métricas |
 | `CKAppDelegate`, `main.m`, `CKTheme.h` | Arranque y colores |
-| `shared_*.c` | Compilan dentro de la app el código de `ios/Bridge/` que también usa `ckctl` (el `Makefile` dice por qué) |
+| `shared_*.c`, `shared_CKSession.m` | Compilan dentro de la app el código de `ios/Bridge/` que también usan `ckctl` y `cksession`, y el del DualSense de `ios/Input/` (el `Makefile` dice por qué) |
 | `Makefile`, `control`, `Resources/` | El paquete de Theos, el `Info.plist` y los íconos |
 
 ## Pantallas
@@ -30,7 +31,7 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
   - Sin botón: una consola sin registrar en reposo (hay que encenderla para registrarla) o una registrada sin IP conocida. Un toque explica qué hacer.
 - **Registrar.** El Account ID de PSN (en base64, 12 caracteres que terminan en `=`, o en decimal) y el PIN de 8 cifras que muestra la PS5 en *Ajustes › Sistema › Remote Play › Vincular dispositivo*. Antes de mandar nada revisa que los dos se puedan leer. Si la consola dice que no, muestra qué corregir (`ck_regist_result_string()`), y con un PIN equivocado borra el campo para escribir otro. Al terminar regresa a la lista.
 - **Ajustes**, desde el botón de arriba a la derecha de la lista. Resolución (360p, 540p o 720p), cuadros por segundo (30 o 60) y bitrate (automático, o de 2 a 15 Mbps), los de `CKSettings` (C5); por defecto 540p a 30 fps con el bitrate del core, 6 Mbps. Cada cambio se guarda en el momento y vale desde la siguiente sesión; debajo de la lista se ven los actuales. *Volver a los valores por defecto* los regresa a esos. En *Pruebas*, **Consolas simuladas** cambia la lista por las consolas inventadas.
-- **Juego.** Pantalla completa, sin barra de estado y sin que el iPad se apague solo. Un toque con tres dedos abre un menú para salir. El video, el audio, los controles y las métricas llegan con A6.5.
+- **Juego.** Pantalla completa, sin barra de estado y sin que el iPad se apague solo. Abre la sesión con la consola y se juega con el DualSense conectado al iPad. Un toque con tres dedos abre el menú: seguir, mostrar las métricas o salir. Con consolas simuladas no abre ninguna sesión.
 
 Toda la app va en horizontal, hacia cualquiera de los dos lados.
 
@@ -43,6 +44,16 @@ Toda la app va en horizontal, hacia cualquiera de los dos lados.
 - **Primera búsqueda.** Al abrir la lista espera hasta 2 s a que contesten, para no mostrar un momento como "no contesta" a las registradas que sí están.
 - **Despertar** manda la señal de `ck_console_wakeup()` con el registro guardado a la IP donde contestó la consola, o a la última conocida.
 - **Registrar** (A6.3) corre `ck_regist` en segundo plano con la IP y el tipo de consola de la búsqueda, como `ckctl regist`. Si la consola dice que no, muestra el porqué con el código HTTP y la razón cuando los da. Si dice que sí, vuelve a leer el registro y agrega la consola encima de lo que haya, igual que `ckctl` (`ck_ui_regist_save()`); si el archivo no se puede leer, ya hay 8 consolas o no se pudo escribir, lo dice y no guarda nada. Salir de la pantalla cancela el registro.
+
+## La pantalla de juego (A6.5)
+
+`CKStreamViewController` abre la sesión de `CKSession` (C1) con el registro guardado, la IP donde contestó la consola y los ajustes de la app.
+
+- **Control.** El DualSense conectado directo al iPad (`CKDS5Source`, A5.8) con el mapeo por defecto (`ck_pad_map.h`, A5.4). Si la sesión está abierta y no hay pad, la pantalla lo dice. Los controles táctiles (A5.5) se agregan cuando lleguen a `main`.
+- **"Ya está en uso".** Justo después de cerrar una sesión, la PS5 rechaza otra unos 4 a 8 s. Si eso pasa antes de que llegue la sesión, la pantalla lo vuelve a pedir cada 2 s, hasta 10 veces, y lo dice.
+- **Cuando termina**, dice por qué en español (`ck_ui_quit_reason_string()`), con el detalle del core debajo, y ofrece *Volver a intentar* o *Volver a la lista*. Al mandar la app al fondo cierra la sesión: iOS la detendría a los pocos segundos.
+- **Métricas**, desde el menú: una línea arriba con cuadros por segundo, tiempo de decodificación, bitrate, cuadros perdidos, audio y memoria, cada segundo.
+- **Video y audio** se conectan aquí cuando lleguen los de A3 (`CKVideoSink`, C2) y A4 (el reproductor, C3). Mientras, la pantalla queda negra y la imagen se ve en la tele.
 
 ## Consolas simuladas (A6.1)
 
@@ -119,6 +130,16 @@ ssh ipad ckctl forget -c <ID de la PS5 en ckctl list>
 
 Después, el agente corre `ssh ipad ckctl list`, que debe mostrar la PS5 registrada otra vez, con su IP. Si algo falló, regresa la copia con `ssh ipad mv /var/mobile/Library/Chiakiport/consoles.plist.bak /var/mobile/Library/Chiakiport/consoles.plist`.
 
+### Jugar con el DualSense (A6.5, sin video todavía)
+
+Con la PS5 registrada, `com.thehuax.ckdirect` instalado y el DualSense conectado al iPad. La imagen se ve en la tele: el iPad todavía no muestra video.
+
+1. Con la PS5 encendida, toca **Jugar**: "Conectando con…" y en 2 o 3 s se quita el texto. La PS5 muestra que se conectó un dispositivo de Remote Play.
+2. Mueve los sticks y aprieta botones: la PS5 responde en la tele. Apaga el DualSense (mantén PS 10 s): en un segundo la pantalla dice que no ve el DualSense; enciéndelo y se quita.
+3. Toca con tres dedos y elige **Mostrar métricas**: arriba sale una línea que cambia cada segundo, con unos 30 fps.
+4. **Salir** y, enseguida, **Jugar** otra vez: debe decir que la consola está cerrando la sesión anterior, probar de nuevo y conectar en unos 8 s.
+5. Pon la PS5 en reposo desde su menú: la pantalla dice que la consola se apagó o entró en reposo, con *Volver a intentar* y *Volver a la lista*.
+
 Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
 
 ## Pruebas en Linux
@@ -126,5 +147,6 @@ Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
 Las pruebas de la app son las `ui_*.c` de `ios/tests/core/`: `ios/tests/core/run.sh` las compila con el mismo core y las corre en sus tres configuraciones, también en armv7 bajo `qemu-arm`.
 
 - `ck_ui_regist` (`ui_regist.c`): guardar un registro en un archivo que no existe (ni su carpeta), encima de los que dejó `ckctl` sin perderlos, reemplazando el de la misma consola, con el registro lleno (no toca el archivo), con un archivo que no se puede leer (lo deja igual) o escribir, y la frase con el código HTTP y la razón, recortada sin partir una letra.
+- `ck_ui_stream` (`ui_stream.c`): solo "ya está en uso" antes de que llegue la sesión se vuelve a pedir, hasta el límite y cubriendo la espera de la PS5; cada motivo de fin tiene su frase; la línea de métricas con coma decimal, redondeo, valores imposibles y un búfer corto.
 - `ck_ui_settings` (`ui_settings.c`): cada combinación que ofrece la pantalla sobrevive al archivo, un archivo vacío o con valores que no se ofrecen da los de por defecto (cada valor por su lado), el bitrate a mano se respeta en su rango, el bitrate automático es el del core para cada resolución y el resumen de la lista.
 - `ck_ui_console_rows` (`ui_console_rows.c`): cada estado y acción de una fila, el orden (el mismo sin importar en qué orden contestaron las consolas), el `host_id` en minúsculas, el nombre guardado sin NUL, el target del registro, un arreglo corto que no se desborda y la IP que se actualiza cuando la consola contesta desde otra.

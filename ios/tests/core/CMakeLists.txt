@@ -140,7 +140,7 @@ add_test(NAME ck_video_info COMMAND ck-video-info-tests)
 
 # A6: the app's portable C (ios/UI).
 add_library(ck-ui STATIC "${CK_IOS_DIR}/UI/ck_console_rows.c" "${CK_IOS_DIR}/UI/ck_ui_regist.c"
-	"${CK_IOS_DIR}/UI/ck_ui_settings.c")
+	"${CK_IOS_DIR}/UI/ck_ui_settings.c" "${CK_IOS_DIR}/UI/ck_ui_stream.c")
 target_include_directories(ck-ui PUBLIC "${CK_IOS_DIR}")
 target_link_libraries(ck-ui PUBLIC ck-consoles)
 target_compile_options(ck-ui PRIVATE -Wall -Wextra -Werror)
@@ -162,3 +162,9 @@ add_executable(ck-ui-regist-tests ui_regist.c)
 target_compile_options(ck-ui-regist-tests PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ck-ui-regist-tests ck-ui munit)
 add_test(NAME ck_ui_regist COMMAND ck-ui-regist-tests)
+
+# A6.5: the game screen's words, its retries after "already in use" and the metrics line.
+add_executable(ck-ui-stream-tests ui_stream.c)
+target_compile_options(ck-ui-stream-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-ui-stream-tests ck-ui munit)
+add_test(NAME ck_ui_stream COMMAND ck-ui-stream-tests)

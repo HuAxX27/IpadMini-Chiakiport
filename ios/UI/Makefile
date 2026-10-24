@@ -23,14 +23,17 @@ CK_GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo desconoc
 
 APPLICATION_NAME = Chiakiport
 
-# The code the app shares with ckctl lives in ios/Bridge. Theos names each
-# object and its directory stamp after the source path it is given, so a ../
-# path would leave build files outside .theos: each shared_*.c includes one
-# file from there, as ios/cli does.
+# The code the app shares with ckctl and cksession lives in ios/Bridge, and
+# the DualSense's in ios/Input. Theos names each object and its directory
+# stamp after the source path it is given, so a ../ path would leave build
+# files outside .theos: each shared_*.c or .m includes one file from there, as
+# ios/cli does.
 Chiakiport_FILES = main.m CKAppDelegate.m CKConsoleService.m CKMockConsoleService.m CKLanConsoleService.m \
 	CKConsoleListViewController.m CKConsoleCell.m CKRegistViewController.m CKStreamViewController.m \
 	CKSettingsStore.m CKSettingsViewController.m \
-	ck_console_rows.c ck_ui_regist.c ck_ui_settings.c shared_ck_consoles.c shared_ck_registry.c
+	ck_console_rows.c ck_ui_regist.c ck_ui_settings.c ck_ui_stream.c \
+	shared_ck_consoles.c shared_ck_registry.c shared_CKSession.m shared_ck_session.c shared_ck_video_info.c \
+	shared_ck_ds5.c shared_ck_ds5_shared.c shared_ck_ds5_source.c shared_ck_pad_map.c
 Chiakiport_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 
 # The core's headers change layout with these two defines: they must match

@@ -2,26 +2,86 @@
 
 #import "CKStreamViewController.h"
 
+#import "Bridge/CKSession.h"
 #import "CKTheme.h"
+
+#include "Input/ck_ds5_shared.h"
+#include "Input/ck_ds5_source.h"
+#include "Input/ck_pad_map.h"
+#include "ck_ui_stream.h"
+
+@interface CKStreamViewController () <CKSessionDelegate>
+@end
 
 @implementation CKStreamViewController
 {
 	id<CKConsoleService> _service;
 	CKConsoleItem *_console;
-	UILabel *_placeholderLabel;
+	CKSettings _settings;
+	CKSession *_session;
+	/** What the session polls on its input thread: alive until the session is stopped. */
+	CKDS5Source _ds5;
+	CKPadMapSource _pad;
+	/** The session reached streaming since its last start. */
+	BOOL _streamed;
+	/** Starts again after "already in use", since the screen opened or the user asked again. */
+	unsigned _retries;
+	/** The session ended and the screen says why. */
+	BOOL _ended;
+	/** Leaving: the session's end is ours, nothing to show. */
+	BOOL _leaving;
+	BOOL _opened;
+	BOOL _showMetrics;
+	UIActivityIndicatorView *_spinner;
+	UILabel *_statusLabel;
+	UIButton *_retryButton;
+	UIButton *_backButton;
+	UILabel *_metricsLabel;
 	UILabel *_hintLabel;
 }
 
-- (instancetype)initWithService:(id<CKConsoleService>)service console:(CKConsoleItem *)console
+- (instancetype)initWithService:(id<CKConsoleService>)service
+                        console:(CKConsoleItem *)console
+                       settings:(CKSettings)settings
 {
 	self = [super initWithNibName:nil bundle:nil];
 	if(!self)
 		return nil;
 	_service = service;
 	_console = console;
+	_settings = settings;
 	self.modalPresentationStyle = UIModalPresentationFullScreen;
 	self.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
 	return self;
+}
+
+- (void)dealloc
+{
+	[[NSNotificationCenter defaultCenter] removeObserver:self];
+	[self closeSession];
+}
+
+- (UILabel *)labelWithSize:(CGFloat)size
+{
+	UILabel *label = [[UILabel alloc] init];
+	label.textColor = CKThemeSecondaryText();
+	label.font = [UIFont systemFontOfSize:size];
+	label.textAlignment = NSTextAlignmentCenter;
+	label.numberOfLines = 0;
+	[self.view addSubview:label];
+	return label;
+}
+
+- (UIButton *)buttonWithTitle:(NSString *)title action:(SEL)action
+{
+	UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+	[button setTitle:title forState:UIControlStateNormal];
+	button.titleLabel.font = [UIFont systemFontOfSize:22];
+	button.tintColor = CKThemeAccent();
+	button.hidden = YES;
+	[button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+	[self.view addSubview:button];
+	return button;
 }
 
 - (void)viewDidLoad
@@ -30,33 +90,45 @@
 	self.view.backgroundColor = [UIColor blackColor];
 	self.view.multipleTouchEnabled = YES;
 
-	_placeholderLabel = [[UILabel alloc] init];
-	_placeholderLabel.textColor = CKThemeSecondaryText();
-	_placeholderLabel.font = [UIFont systemFontOfSize:24];
-	_placeholderLabel.textAlignment = NSTextAlignmentCenter;
-	_placeholderLabel.numberOfLines = 0;
-	_placeholderLabel.text = [NSString stringWithFormat:@"%@\n\nAquí va el video de la consola.\nLlega con la pantalla de "
-		@"juego (A6.5).", _console.name];
-	[self.view addSubview:_placeholderLabel];
-
-	_hintLabel = [[UILabel alloc] init];
-	_hintLabel.textColor = CKThemeSecondaryText();
-	_hintLabel.font = [UIFont systemFontOfSize:17];
-	_hintLabel.textAlignment = NSTextAlignmentCenter;
+	_spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+	_spinner.hidesWhenStopped = YES;
+	[self.view addSubview:_spinner];
+	_statusLabel = [self labelWithSize:24];
+	_retryButton = [self buttonWithTitle:@"Volver a intentar" action:@selector(retryTapped)];
+	_backButton = [self buttonWithTitle:@"Volver a la lista" action:@selector(leave)];
+	_hintLabel = [self labelWithSize:17];
 	_hintLabel.text = @"Toca con tres dedos para salir";
-	[self.view addSubview:_hintLabel];
+
+	_metricsLabel = [self labelWithSize:14];
+	_metricsLabel.textColor = CKThemeText();
+	_metricsLabel.textAlignment = NSTextAlignmentLeft;
+	_metricsLabel.numberOfLines = 1;
+	_metricsLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
+	_metricsLabel.hidden = YES;
 
 	UITapGestureRecognizer *menu = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(menuGesture:)];
 	menu.numberOfTouchesRequired = 3;
 	[self.view addGestureRecognizer:menu];
+
+	if(_service.simulated)
+		[self showStatus:[NSString stringWithFormat:@"%@\n\nConsola simulada: aquí iría su video.", _console.name]
+			busy:NO];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appDidEnterBackground:)
+		name:UIApplicationDidEnterBackgroundNotification object:nil];
 }
 
 - (void)viewDidLayoutSubviews
 {
 	[super viewDidLayoutSubviews];
 	CGRect bounds = self.view.bounds;
-	_placeholderLabel.frame = CGRectInset(bounds, 80, 160);
-	_hintLabel.frame = CGRectMake(0, bounds.size.height - 64, bounds.size.width, 32);
+	CGFloat width = bounds.size.width;
+	CGFloat height = bounds.size.height;
+	_spinner.center = CGPointMake(width / 2, height / 2 - 120);
+	_statusLabel.frame = CGRectMake(80, height / 2 - 90, width - 160, 180);
+	_retryButton.frame = CGRectMake(width / 2 - 230, height / 2 + 110, 220, 48);
+	_backButton.frame = CGRectMake(width / 2 + 10, height / 2 + 110, 220, 48);
+	_hintLabel.frame = CGRectMake(0, height - 64, width, 32);
+	_metricsLabel.frame = CGRectMake(0, 0, width, 24);
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -68,6 +140,10 @@
 	[UIView animateWithDuration:1.0 delay:4.0 options:0 animations:^{
 		self->_hintLabel.alpha = 0;
 	} completion:nil];
+	if(_opened || _service.simulated)
+		return;
+	_opened = YES;
+	[self openSession];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -81,6 +157,159 @@
 	return YES;
 }
 
+// ---------------------------------------------------------------------------
+// What the screen says
+// ---------------------------------------------------------------------------
+
+- (void)showStatus:(NSString *)status busy:(BOOL)busy
+{
+	_statusLabel.text = status;
+	if(busy)
+		[_spinner startAnimating];
+	else
+		[_spinner stopAnimating];
+	_retryButton.hidden = !_ended;
+	_backButton.hidden = !_ended;
+}
+
+- (void)showEnd:(NSString *)reason
+{
+	[self closeSession];
+	_ended = YES;
+	[self showStatus:reason busy:NO];
+}
+
+- (void)showStreaming
+{
+	// Polled by the session's input thread; read here once a second, with the metrics.
+	if(ck_ds5_source_connected(&_ds5))
+		[self showStatus:@"" busy:NO];
+	else
+		[self showStatus:@"Conectada. No veo el DualSense: enciéndelo con el botón PS para que se conecte al iPad."
+			busy:NO];
+}
+
+// ---------------------------------------------------------------------------
+// The session
+// ---------------------------------------------------------------------------
+
+- (void)openSession
+{
+	_ended = NO;
+	_retries = 0;
+	ChiakiRegisteredHost host;
+	if(![_service getRegisteredHost:&host forConsole:_console])
+	{
+		[self showEnd:@"Esta consola no está registrada en este iPad."];
+		return;
+	}
+	NSString *address = _console.address;
+	if(!address.length)
+	{
+		[self showEnd:@"No sé la IP de la consola. Vuelve a la lista y despiértala."];
+		return;
+	}
+	_session = [[CKSession alloc] initWithHost:address registeredHost:&host settings:_settings];
+	_session.delegate = self;
+	ck_ds5_source_init(&_ds5, CK_DS5_SHARED_PATH);
+	CKPadMap map;
+	ck_pad_map_set_default(&map);
+	[_session addInputSource:ck_pad_map_source_input(&_pad, ck_ds5_source_input(&_ds5), &map)];
+	[self startSession];
+}
+
+- (void)startSession
+{
+	_streamed = NO;
+	[self showStatus:[NSString stringWithFormat:@"Conectando con %@…", _console.name] busy:YES];
+	NSError *error;
+	if(![_session start:&error])
+		[self showEnd:[NSString stringWithFormat:@"No pude abrir la sesión (%@).", error.localizedDescription]];
+}
+
+/** Stops the session, which joins its threads, and only then lets go of what they read. */
+- (void)closeSession
+{
+	if(!_session)
+		return;
+	_session.delegate = nil;
+	[_session stop];
+	[_session removeAllInputSources];
+	_session = nil;
+	ck_ds5_source_fini(&_ds5);
+}
+
+- (void)session:(CKSession *)session didChangeState:(CKSessionState)state
+{
+	if(session != _session)
+		return;
+	if(state == CKSessionStateStreaming)
+	{
+		_streamed = YES;
+		[self showStreaming];
+	}
+}
+
+- (void)session:(CKSession *)session didQuitWithReason:(ChiakiQuitReason)reason message:(NSString *)message
+{
+	if(session != _session || _leaving)
+		return;
+	if(ck_ui_session_should_retry(reason, _streamed, _retries))
+	{
+		_retries++;
+		[self showStatus:[NSString stringWithFormat:@"La consola todavía está cerrando la sesión anterior. Pruebo otra "
+			@"vez (%u de %d)…", _retries, CK_UI_SESSION_RETRY_MAX] busy:YES];
+		__weak CKStreamViewController *weak = self;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CK_UI_SESSION_RETRY_SECONDS * NSEC_PER_SEC)),
+			dispatch_get_main_queue(), ^{
+				[weak retryAfterInUse:session];
+			});
+		return;
+	}
+	NSString *text = @(ck_ui_quit_reason_string(reason));
+	// The core's own words, in English, for the report.
+	if(message.length)
+		text = [text stringByAppendingFormat:@"\n\n%@", message];
+	[self showEnd:text];
+}
+
+- (void)retryAfterInUse:(CKSession *)session
+{
+	// Left or gave up meanwhile.
+	if(session != _session || _leaving)
+		return;
+	[self startSession];
+}
+
+- (void)session:(CKSession *)session didUpdateMetrics:(CKMetrics)metrics
+{
+	if(session != _session)
+		return;
+	[self showStreaming];
+	if(!_showMetrics)
+		return;
+	char line[CK_UI_METRICS_LINE_SIZE];
+	ck_ui_metrics_line(&metrics, line, sizeof(line));
+	_metricsLabel.text = [NSString stringWithFormat:@"  %s", line];
+}
+
+- (void)retryTapped
+{
+	[self openSession];
+}
+
+- (void)appDidEnterBackground:(NSNotification *)notification
+{
+	// iOS stops a backgrounded app within seconds: close the session cleanly first.
+	if(!_session || _leaving)
+		return;
+	[self showEnd:@"La sesión se cerró al salir de la app."];
+}
+
+// ---------------------------------------------------------------------------
+// The menu
+// ---------------------------------------------------------------------------
+
 - (void)menuGesture:(UITapGestureRecognizer *)gesture
 {
 	if(self.presentedViewController)
@@ -89,6 +318,11 @@
 		preferredStyle:UIAlertControllerStyleAlert];
 	[menu addAction:[UIAlertAction actionWithTitle:@"Seguir jugando" style:UIAlertActionStyleCancel handler:nil]];
 	__weak CKStreamViewController *weak = self;
+	if(!_service.simulated)
+		[menu addAction:[UIAlertAction actionWithTitle:_showMetrics ? @"Ocultar métricas" : @"Mostrar métricas"
+			style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+				[weak toggleMetrics];
+			}]];
 	[menu addAction:[UIAlertAction actionWithTitle:@"Salir" style:UIAlertActionStyleDestructive
 		handler:^(UIAlertAction *action) {
 			[weak leave];
@@ -96,8 +330,19 @@
 	[self presentViewController:menu animated:YES completion:nil];
 }
 
+- (void)toggleMetrics
+{
+	_showMetrics = !_showMetrics;
+	_metricsLabel.hidden = !_showMetrics;
+	_metricsLabel.text = @"  Las métricas salen cada segundo mientras llega la sesión.";
+}
+
 - (void)leave
 {
+	if(_leaving)
+		return;
+	_leaving = YES;
+	[self closeSession];
 	[self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
