@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
+
+#import "CKVViewController.h"
+
+#import "CKVCapturePlayer.h"
+#import "CKVVideoView.h"
+
+#include "CKVideoSink.h"
+#include "ck_video_sink_stats.h"
+
+#include <mach/mach.h>
+
+/** Where to look for a capture: next to the consoles.plist, then where the A2.8 test left it. */
+static NSArray<NSString *> *CKVCapturePaths(void)
+{
+	return @[ @"/var/mobile/Library/Chiakiport/captura.h264", @"/var/mobile/captura.h264" ];
+}
+
+static uint32_t CKVResidentKB(void)
+{
+	struct task_basic_info info;
+	mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
+	if(task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+		return 0;
+	return (uint32_t)(info.resident_size / 1024);
+}
+
+@implementation CKVViewController
+{
+	CKVVideoView *_videoView;
+	CKVideoSink *_sink;
+	UIView *_panel;
+	UILabel *_statusLabel;
+	UILabel *_statsLabel;
+	CKVCapturePlayer *_player;
+	NSTimer *_timer;
+	NSUInteger _seconds;
+	/** Since the start of playback. */
+	CKVideoSinkStats _total;
+}
+
+- (void)dealloc
+{
+	[self stopAll];
+	ck_video_sink_free(_sink);
+}
+
+- (BOOL)prefersStatusBarHidden
+{
+	return YES;
+}
+
+- (UIButton *)addButton:(NSString *)title action:(SEL)action frame:(CGRect)frame
+{
+	UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+	button.frame = frame;
+	button.titleLabel.font = [UIFont boldSystemFontOfSize:20];
+	button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.15];
+	button.layer.cornerRadius = 8;
+	[button setTitle:title forState:UIControlStateNormal];
+	[button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+	[button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+	[_panel addSubview:button];
+	return button;
+}
+
+- (UILabel *)addLabelWithFrame:(CGRect)frame font:(UIFont *)font
+{
+	UILabel *label = [[UILabel alloc] initWithFrame:frame];
+	label.font = font;
+	label.textColor = [UIColor whiteColor];
+	label.numberOfLines = 0;
+	[_panel addSubview:label];
+	return label;
+}
+
+- (void)viewDidLoad
+{
+	[super viewDidLoad];
+	self.view.backgroundColor = [UIColor blackColor];
+
+	_videoView = [[CKVVideoView alloc] initWithFrame:self.view.bounds];
+	_videoView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+	[self.view addSubview:_videoView];
+	[_videoView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(togglePanel)]];
+	_sink = ck_video_sink_new((__bridge void *)_videoView.displayLayer);
+
+	_panel = [[UIView alloc] initWithFrame:CGRectMake(16, 16, 560, 300)];
+	_panel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.65];
+	_panel.layer.cornerRadius = 12;
+	[self.view addSubview:_panel];
+
+	UIFont *mono = [UIFont fontWithName:@"Menlo-Regular" size:15] ?: [UIFont systemFontOfSize:15];
+	UILabel *title = [self addLabelWithFrame:CGRectMake(16, 10, 528, 28) font:[UIFont boldSystemFontOfSize:22]];
+	title.text = [NSString stringWithFormat:@"CK Video %@ (%s)",
+		[NSBundle mainBundle].infoDictionary[@"CFBundleShortVersionString"], CK_GIT_COMMIT];
+	_statusLabel = [self addLabelWithFrame:CGRectMake(16, 40, 528, 48) font:[UIFont systemFontOfSize:16]];
+	_statsLabel = [self addLabelWithFrame:CGRectMake(16, 90, 528, 140) font:mono];
+	[self addButton:@"Reproducir la captura" action:@selector(playCapture) frame:CGRectMake(16, 240, 300, 44)];
+	[self addButton:@"Detener" action:@selector(stopAll) frame:CGRectMake(332, 240, 212, 44)];
+
+	_statusLabel.text = _sink ? @"Toca el video para ocultar o mostrar este panel."
+		: @"No pude crear el sumidero de video.";
+}
+
+- (void)togglePanel
+{
+	_panel.hidden = !_panel.hidden;
+}
+
+- (void)playCapture
+{
+	[self stopAll];
+	if(!_sink)
+		return;
+	NSString *error = nil;
+	for(NSString *path in CKVCapturePaths())
+	{
+		if(![[NSFileManager defaultManager] fileExistsAtPath:path])
+			continue;
+		_player = [[CKVCapturePlayer alloc] initWithPath:path error:&error];
+		break;
+	}
+	if(!_player)
+	{
+		_statusLabel.text = error ?: [NSString stringWithFormat:@"No encontré la captura en %@.",
+			[CKVCapturePaths() componentsJoinedByString:@" ni en "]];
+		printf("%s\n", _statusLabel.text.UTF8String);
+		return;
+	}
+	_statusLabel.text = [NSString stringWithFormat:@"%@: %lu cuadros, %.1f MB, a 30 cuadros/s.", _player.path,
+		(unsigned long)_player.frameCount, _player.byteCount / 1048576.0];
+	printf("Reproduzco %s\n", _statusLabel.text.UTF8String);
+	ck_video_sink_reset(_sink);
+	CKVideoSinkStats discard;
+	ck_video_sink_take_all_stats(_sink, &discard);
+	memset(&_total, 0, sizeof(_total));
+	_seconds = 0;
+	[_player startWithSink:_sink];
+	[UIApplication sharedApplication].idleTimerDisabled = YES;
+	_timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+}
+
+- (void)stopAll
+{
+	[_timer invalidate];
+	_timer = nil;
+	if(_player)
+	{
+		[_player stop];
+		[self tick];
+		printf("Detenido tras %lu s\n", (unsigned long)_seconds);
+		_player = nil;
+	}
+	[UIApplication sharedApplication].idleTimerDisabled = NO;
+}
+
+- (void)tick
+{
+	CKVideoSinkStats s;
+	ck_video_sink_take_all_stats(_sink, &s);
+	_seconds++;
+	_total.core.frames_decoded += s.core.frames_decoded;
+	_total.core.frames_failed += s.core.frames_failed;
+	_total.core.frames_skipped += s.core.frames_skipped;
+	_total.core.decoder_broken += s.core.decoder_broken;
+	_total.core.configures += s.core.configures;
+	_total.frames_shown += s.frames_shown;
+	_total.layer_failures += s.layer_failures;
+	if(s.core.decode_us_max > _total.core.decode_us_max)
+		_total.core.decode_us_max = s.core.decode_us_max;
+
+	uint32_t decodes = s.core.frames_decoded + s.core.frames_failed;
+	double avg_ms = decodes ? s.core.decode_us / 1000.0 / decodes : 0.0;
+	NSString *now = [NSString stringWithFormat:
+		@"Este segundo: %u decodificados, %u mostrados\n"
+		@"Decodificar: %.1f ms promedio, %.1f ms máximo\n"
+		@"En total (%lu s, vuelta %lu): %u decodificados,\n"
+		@"  %u fallidos, %u omitidos, %u rechazados por la capa\n"
+		@"Decodificadores creados: %u, rotos: %u\n"
+		@"Memoria: %u KB",
+		s.core.frames_decoded, s.frames_shown, avg_ms, s.core.decode_us_max / 1000.0,
+		(unsigned long)_seconds, (unsigned long)_player.loops + 1, _total.core.frames_decoded,
+		_total.core.frames_failed, _total.core.frames_skipped, _total.layer_failures, _total.core.configures,
+		_total.core.decoder_broken, CKVResidentKB()];
+	_statsLabel.text = now;
+	if(_seconds % 10 == 0)
+		printf("%lu s: %u/s, %.1f ms (máx %.1f), total %u decodificados, %u fallidos, %u omitidos, capa %u, %u KB\n",
+			(unsigned long)_seconds, s.core.frames_decoded, avg_ms, _total.core.decode_us_max / 1000.0,
+			_total.core.frames_decoded, _total.core.frames_failed, _total.core.frames_skipped, _total.layer_failures,
+			CKVResidentKB());
+}
+
+@end

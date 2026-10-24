@@ -51,6 +51,50 @@ bool ck_h264_annexb_next_nal(const uint8_t *buf, size_t size, size_t *pos, const
 	return false;
 }
 
+// Whether a NAL unit starts a new access unit once the current one has a
+// slice. first_mb_in_slice is the first ue(v) of a slice header, and 0 is
+// coded as a single 1 bit.
+static bool starts_access_unit(const uint8_t *nal, size_t size)
+{
+	unsigned type = CK_H264_NAL_TYPE(nal[0]);
+	if(type >= CK_H264_NAL_SEI && type <= CK_H264_NAL_AUD)
+		return true;
+	return (type == CK_H264_NAL_SLICE || type == CK_H264_NAL_IDR) && size > 1 && (nal[1] & 0x80);
+}
+
+bool ck_h264_next_access_unit(const uint8_t *buf, size_t size, size_t *pos, const uint8_t **au, size_t *au_size)
+{
+	if(!buf || !pos || *pos >= size)
+		return false;
+	size_t start = *pos;
+	size_t scan = start;
+	bool found = false;
+	bool has_slice = false;
+	const uint8_t *nal;
+	size_t nal_size;
+	while(ck_h264_annexb_next_nal(buf, size, &scan, &nal, &nal_size))
+	{
+		found = true;
+		if(has_slice && starts_access_unit(nal, nal_size))
+		{
+			// It ends where the 3-byte start code of the next one begins.
+			size_t end = (size_t)(nal - buf) - 3;
+			*au = buf + start;
+			*au_size = end - start;
+			*pos = end;
+			return true;
+		}
+		unsigned type = CK_H264_NAL_TYPE(nal[0]);
+		has_slice |= type == CK_H264_NAL_SLICE || type == CK_H264_NAL_IDR;
+	}
+	*pos = size;
+	if(!found)
+		return false;
+	*au = buf + start;
+	*au_size = size - start;
+	return true;
+}
+
 size_t ck_h264_avcc_max_size(size_t annexb_size)
 {
 	size_t extra = annexb_size / 4;
