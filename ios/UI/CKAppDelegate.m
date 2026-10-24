@@ -11,7 +11,8 @@
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
 	id<CKConsoleService> service = [[CKMockConsoleService alloc] init];
-	CKConsoleListViewController *list = [[CKConsoleListViewController alloc] initWithService:service];
+	CKConsoleListViewController *list = [[CKConsoleListViewController alloc] initWithService:service
+		settings:[CKSettingsStore sharedStore]];
 	UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:list];
 	UINavigationBar *bar = navigation.navigationBar;
 	bar.barStyle = UIBarStyleBlack;

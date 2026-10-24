@@ -4,6 +4,7 @@
 
 #import "CKConsoleCell.h"
 #import "CKRegistViewController.h"
+#import "CKSettingsViewController.h"
 #import "CKStreamViewController.h"
 #import "CKTheme.h"
 
@@ -14,6 +15,7 @@ static const NSTimeInterval CKWakeTimeout = 45;
 @implementation CKConsoleListViewController
 {
 	id<CKConsoleService> _service;
+	CKSettingsStore *_settings;
 	NSArray<CKConsoleItem *> *_consoles;
 	/** hostID -> when the wake-up went out, until the console answers as on. */
 	NSMutableDictionary<NSString *, NSDate *> *_waking;
@@ -23,12 +25,13 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	BOOL _visible;
 }
 
-- (instancetype)initWithService:(id<CKConsoleService>)service
+- (instancetype)initWithService:(id<CKConsoleService>)service settings:(CKSettingsStore *)settings
 {
 	self = [super initWithStyle:UITableViewStylePlain];
 	if(!self)
 		return nil;
 	_service = service;
+	_settings = settings;
 	_service.delegate = self;
 	_consoles = service.consoles;
 	_waking = [NSMutableDictionary dictionary];
@@ -50,6 +53,8 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	table.separatorColor = CKThemeSeparator();
 	table.rowHeight = [CKConsoleCell height];
 	[table registerClass:[CKConsoleCell class] forCellReuseIdentifier:CKConsoleCellID];
+	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Ajustes"
+		style:UIBarButtonItemStylePlain target:self action:@selector(openSettings:)];
 
 	_emptyLabel = [[UILabel alloc] init];
 	_emptyLabel.textColor = CKThemeSecondaryText();
@@ -72,6 +77,7 @@ static const NSTimeInterval CKWakeTimeout = 45;
 		object:nil];
 	[center addObserver:self selector:@selector(appWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification
 		object:nil];
+	[center addObserver:self selector:@selector(settingsChanged:) name:CKSettingsDidChangeNotification object:_settings];
 	[self updateFooter];
 }
 
@@ -101,12 +107,27 @@ static const NSTimeInterval CKWakeTimeout = 45;
 		[_service start];
 }
 
+- (void)openSettings:(id)sender
+{
+	[self.navigationController pushViewController:[[CKSettingsViewController alloc] initWithStore:_settings]
+		animated:YES];
+}
+
+- (void)settingsChanged:(NSNotification *)notification
+{
+	[self updateFooter];
+}
+
 - (void)updateFooter
 {
 	NSDictionary *info = [NSBundle mainBundle].infoDictionary;
 	NSMutableArray<NSString *> *lines = [NSMutableArray array];
 	if(_service.simulated)
 		[lines addObject:@"Consolas simuladas: nada de esta lista existe ni se guarda."];
+	CKSettings settings = _settings.settings;
+	char summary[96];
+	ck_ui_settings_summary(&settings, summary, sizeof(summary));
+	[lines addObject:[NSString stringWithFormat:@"Ajustes: %s", summary]];
 	[lines addObject:[NSString stringWithFormat:@"Chiakiport %@ (%s)", info[@"CFBundleShortVersionString"], CK_GIT_COMMIT]];
 	_footerLabel.text = [lines componentsJoinedByString:@"\n"];
 }

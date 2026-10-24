@@ -9,6 +9,9 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 | `ck_console_rows.h`, `.c` | Las filas de la lista: junta lo que encontró la búsqueda (`CKConsoles.h`) con los registros guardados (`ck_registry.h`), decide el estado y la acción de cada consola y las ordena |
 | `CKConsoleService.h`, `.m` | Lo que las pantallas le piden a las consolas: la lista, despertar, registrar y el registro para la sesión |
 | `CKMockConsoleService.h`, `.m` | Consolas simuladas (A6.1), para probar cada pantalla sin consola |
+| `ck_ui_settings.h`, `.c` | Los ajustes que ofrece la app sobre el modelo de C5 y lo que acepta del archivo |
+| `CKSettingsStore.h`, `.m` | Los ajustes guardados en el iPad (A6.4) |
+| `CKSettingsViewController` | La pantalla de ajustes |
 | `CKConsoleListViewController`, `CKConsoleCell` | La lista de consolas, la primera pantalla |
 | `CKRegistViewController` | El registro: Account ID, PIN y qué corregir si la consola dice que no |
 | `CKStreamViewController` | La pantalla de juego; por ahora, un fondo negro con el gesto para salir |
@@ -24,6 +27,7 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
   - **Registrar**, encendida y sin registrar: abre el registro.
   - Sin botón: una consola sin registrar en reposo (hay que encenderla para registrarla) o una registrada sin IP conocida. Un toque explica qué hacer.
 - **Registrar.** El Account ID de PSN (en base64, 12 caracteres que terminan en `=`, o en decimal) y el PIN de 8 cifras que muestra la PS5 en *Ajustes › Sistema › Remote Play › Vincular dispositivo*. Antes de mandar nada revisa que los dos se puedan leer. Si la consola dice que no, muestra qué corregir (`ck_regist_result_string()`), y con un PIN equivocado borra el campo para escribir otro. Al terminar regresa a la lista.
+- **Ajustes**, desde el botón de arriba a la derecha de la lista. Resolución (360p, 540p o 720p), cuadros por segundo (30 o 60) y bitrate (automático, o de 2 a 15 Mbps), los de `CKSettings` (C5); por defecto 540p a 30 fps con el bitrate del core, 6 Mbps. Cada cambio se guarda en el momento y vale desde la siguiente sesión; debajo de la lista se ven los actuales. *Volver a los valores por defecto* los regresa a esos.
 - **Juego.** Pantalla completa, sin barra de estado y sin que el iPad se apague solo. Un toque con tres dedos abre un menú para salir. El video, el audio, los controles y las métricas llegan con A6.5.
 
 Toda la app va en horizontal, hacia cualquiera de los dos lados.
@@ -40,6 +44,12 @@ Por ahora la lista sale de `CKMockConsoleService`, cuatro consolas inventadas, u
 | PS5-517 | encendida, sin registrar | Registrar: tarda 2 s y funciona con cualquier Account ID válido y cualquier PIN de 8 cifras, salvo `00000000`, que la simulación rechaza como un PIN equivocado |
 
 Nada de esto se guarda: al cerrar la app vuelve a como empezó. Debajo de la lista lo dice, junto con la versión y el commit de la app.
+
+## Dónde se guardan los ajustes (A6.4)
+
+En `/var/mobile/Library/Chiakiport/settings.plist`, junto a los registros de `ckctl`, como un plist XML con tres números: `resolution` (la altura: 360, 540 o 720), `fps` (30 o 60) y `bitrate_kbps` (0 es el del core). `ck_ui_settings.h` tiene el formato. Se escribe completo en un archivo temporal que luego reemplaza al anterior, así que cerrar la app a la mitad nunca lo deja roto, y sobrevive a cerrar la app y a reiniciar el iPad.
+
+Al abrir, un valor que falta o que la app no ofrece vuelve a su valor por defecto sin tocar los demás, y la app abre igual. Un bitrate escrito a mano entre 1 y 30 Mbps se respeta aunque no tenga botón; la pantalla lo dice. No tiene datos de la cuenta ni de la consola.
 
 ## Compilar
 
@@ -63,10 +73,15 @@ La instalación y lo que se corre por SSH lo hace un agente desde la laptop (`io
 6. **Registrar** en *PS5-517*: escribe `1` como Account ID y `00000000` como PIN: debe decir que la consola rechazó el PIN y borrar el PIN. Escribe otras 8 cifras: debe decir "Registro listo." y volver a la lista, donde *PS5-517* ya tiene **Jugar**.
 7. **Jugar** en *PS5 de la sala*: pantalla negra con el nombre y "Toca con tres dedos para salir". Espera un minuto: la pantalla no debe oscurecerse. Toca con tres dedos y elige **Salir**: vuelve a la lista.
 
-Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
+8. **Ajustes**: elige 720p, 60 y 10. Debajo de la lista debe decir `Ajustes: 720p · 60 fps · 10 Mbps`.
+9. Cierra la app desde el multitarea (doble clic al botón de inicio y desliza la app hacia arriba) y ábrela otra vez: los ajustes siguen en 720p, 60 y 10.
+10. Reinicia el iPad, vuelve a correr Carbon y abre la app: siguen igual. Al final, *Volver a los valores por defecto* deja 540p, 30 y Auto.
+
+Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal. Desde la laptop, `ssh ipad cat /var/mobile/Library/Chiakiport/settings.plist` muestra lo que quedó guardado.
 
 ## Pruebas en Linux
 
 Las pruebas de la app son las `ui_*.c` de `ios/tests/core/`: `ios/tests/core/run.sh` las compila con el mismo core y las corre en sus tres configuraciones, también en armv7 bajo `qemu-arm`.
 
+- `ck_ui_settings` (`ui_settings.c`): cada combinación que ofrece la pantalla sobrevive al archivo, un archivo vacío o con valores que no se ofrecen da los de por defecto (cada valor por su lado), el bitrate a mano se respeta en su rango, el bitrate automático es el del core para cada resolución y el resumen de la lista.
 - `ck_ui_console_rows` (`ui_console_rows.c`): cada estado y acción de una fila, el orden (el mismo sin importar en qué orden contestaron las consolas), el `host_id` en minúsculas, el nombre guardado sin NUL, el target del registro, un arreglo corto que no se desborda y la IP que se actualiza cuando la consola contesta desde otra.
