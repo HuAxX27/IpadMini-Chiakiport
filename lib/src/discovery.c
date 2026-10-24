@@ -191,7 +191,15 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_discovery_init(ChiakiDiscovery *discovery, 
 			addr->sin_port = htons(port);
 		}
 
-		r = bind(discovery->socket, (struct sockaddr *)&discovery->local_addr, sizeof(discovery->local_addr));
+		// iOS and macOS fail bind() with EINVAL, on every port, when the
+		// length is not exactly the family's: an IPv4 address in the
+		// IPv6-sized local_addr has to say 16, not 28.
+#if defined(__SWITCH__) || defined(__PSVITA__)
+		size_t local_addr_len = sizeof(discovery->local_addr);
+#else
+		size_t local_addr_len = family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+#endif
+		r = bind(discovery->socket, (struct sockaddr *)&discovery->local_addr, local_addr_len);
 		if(r >= 0 || !port)
 			break;
 		if(port == CHIAKI_DISCOVERY_PORT_LOCAL_MAX)

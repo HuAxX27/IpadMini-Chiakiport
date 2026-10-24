@@ -7,6 +7,7 @@
 //   cc -std=c11 -fsyntax-only -Ilib/include -Iios -Ibridge/protocol ios/tests/contracts_check.c
 
 #include "Audio/CKAudioSink.h"
+#include "Bridge/CKConsoles.h"
 #include "Bridge/CKSettings.h"
 #include "Input/CKInputSource.h"
 #include "Video/CKVideoSink.h"
