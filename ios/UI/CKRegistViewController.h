@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 // Registering the iPad with a console: the PSN Account ID, the PIN the
-// console shows, and what to fix when the console says no. A6.1 lays it out
-// over the simulated consoles; A6.3 connects it to ck_regist.
+// console shows, and what to fix when the console says no. The service does
+// the registration: ck_regist on the network (A6.3), or a simulated one.
 
 #import <UIKit/UIKit.h>
 

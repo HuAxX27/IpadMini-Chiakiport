@@ -30,7 +30,7 @@ APPLICATION_NAME = Chiakiport
 Chiakiport_FILES = main.m CKAppDelegate.m CKConsoleService.m CKMockConsoleService.m CKLanConsoleService.m \
 	CKConsoleListViewController.m CKConsoleCell.m CKRegistViewController.m CKStreamViewController.m \
 	CKSettingsStore.m CKSettingsViewController.m \
-	ck_console_rows.c ck_ui_settings.c shared_ck_consoles.c shared_ck_registry.c
+	ck_console_rows.c ck_ui_regist.c ck_ui_settings.c shared_ck_consoles.c shared_ck_registry.c
 Chiakiport_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 
 # The core's headers change layout with these two defines: they must match

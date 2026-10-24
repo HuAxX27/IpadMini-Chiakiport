@@ -10,6 +10,7 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 | `CKConsoleService.h`, `.m` | Lo que las pantallas le piden a las consolas: la lista, despertar, registrar y el registro para la sesión |
 | `CKLanConsoleService.h`, `.m` | Las consolas de la red (A6.2): búsqueda, registros guardados y despertar |
 | `CKMockConsoleService.h`, `.m` | Consolas simuladas (A6.1), para probar cada pantalla sin consola |
+| `ck_ui_regist.h`, `.c` | Al terminar un registro (A6.3): la frase para el usuario y guardarlo encima del archivo de registros |
 | `ck_ui_settings.h`, `.c` | Los ajustes que ofrece la app sobre el modelo de C5 y lo que acepta del archivo |
 | `CKSettingsStore.h`, `.m` | Los ajustes guardados en el iPad (A6.4) |
 | `CKSettingsViewController` | La pantalla de ajustes |
@@ -41,7 +42,7 @@ Toda la app va en horizontal, hacia cualquiera de los dos lados.
 - **IP nueva.** Si una consola registrada contesta desde otra IP (el router le dio otra), la guarda en el registro, como `ckctl`, para despertarla ahí la próxima vez. Antes de guardar vuelve a leer el archivo, para no borrar lo que `ckctl` haya escrito.
 - **Primera búsqueda.** Al abrir la lista espera hasta 2 s a que contesten, para no mostrar un momento como "no contesta" a las registradas que sí están.
 - **Despertar** manda la señal de `ck_console_wakeup()` con el registro guardado a la IP donde contestó la consola, o a la última conocida.
-- **Registrar** desde la app llega con A6.3; mientras, dice que se use `ckctl regist`.
+- **Registrar** (A6.3) corre `ck_regist` en segundo plano con la IP y el tipo de consola de la búsqueda, como `ckctl regist`. Si la consola dice que no, muestra el porqué con el código HTTP y la razón cuando los da. Si dice que sí, vuelve a leer el registro y agrega la consola encima de lo que haya, igual que `ckctl` (`ck_ui_regist_save()`); si el archivo no se puede leer, ya hay 8 consolas o no se pudo escribir, lo dice y no guarda nada. Salir de la pantalla cancela el registro.
 
 ## Consolas simuladas (A6.1)
 
@@ -101,11 +102,29 @@ Con la PS5 ya registrada con `ckctl regist` y en la misma red. Antes, el agente 
 4. Desde el control, pon la PS5 en reposo otra vez: en unos segundos la fila vuelve a *en reposo*.
 5. Apaga del todo la PS5 (mantén el botón de encendido hasta el segundo pitido) o desconéctala de la red: unos segundos después la fila dice *no contesta*. Enciéndela y vuelve a aparecer.
 
+### Registrar la PS5 desde la app (A6.3)
+
+Antes, el agente guarda una copia del registro y quita la PS5 para que la app la vea sin registrar:
+
+```sh
+ssh ipad cp /var/mobile/Library/Chiakiport/consoles.plist /var/mobile/Library/Chiakiport/consoles.plist.bak
+ssh ipad ckctl forget -c <ID de la PS5 en ckctl list>
+```
+
+1. Con la PS5 encendida, abre la lista: la PS5 sale *encendida* con **Registrar**.
+2. En la PS5: *Ajustes › Sistema › Remote Play › Vincular dispositivo*. Queda un código de 8 cifras en la tele.
+3. En la app, **Registrar**: escribe el Account ID de PSN y, primero, un código equivocado (cambia una cifra). En unos 6 s debe decir que la consola rechazó el PIN y borrar el campo.
+4. Pide otro código en la PS5 si el anterior ya no se ve, escríbelo bien y **Registrar**: "Registro listo." y regresa a la lista, donde la PS5 sale con **Jugar**.
+5. Pon la PS5 en reposo y usa **Despertar** desde la app: se enciende con el registro nuevo.
+
+Después, el agente corre `ssh ipad ckctl list`, que debe mostrar la PS5 registrada otra vez, con su IP. Si algo falló, regresa la copia con `ssh ipad mv /var/mobile/Library/Chiakiport/consoles.plist.bak /var/mobile/Library/Chiakiport/consoles.plist`.
+
 Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
 
 ## Pruebas en Linux
 
 Las pruebas de la app son las `ui_*.c` de `ios/tests/core/`: `ios/tests/core/run.sh` las compila con el mismo core y las corre en sus tres configuraciones, también en armv7 bajo `qemu-arm`.
 
+- `ck_ui_regist` (`ui_regist.c`): guardar un registro en un archivo que no existe (ni su carpeta), encima de los que dejó `ckctl` sin perderlos, reemplazando el de la misma consola, con el registro lleno (no toca el archivo), con un archivo que no se puede leer (lo deja igual) o escribir, y la frase con el código HTTP y la razón, recortada sin partir una letra.
 - `ck_ui_settings` (`ui_settings.c`): cada combinación que ofrece la pantalla sobrevive al archivo, un archivo vacío o con valores que no se ofrecen da los de por defecto (cada valor por su lado), el bitrate a mano se respeta en su rango, el bitrate automático es el del core para cada resolución y el resumen de la lista.
 - `ck_ui_console_rows` (`ui_console_rows.c`): cada estado y acción de una fila, el orden (el mismo sin importar en qué orden contestaron las consolas), el `host_id` en minúsculas, el nombre guardado sin NUL, el target del registro, un arreglo corto que no se desborda y la IP que se actualiza cuando la consola contesta desde otra.
