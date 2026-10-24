@@ -10,9 +10,18 @@
 // if BTServer cannot write there. It never logs link keys, PINs or anything
 // after the first bytes of a packet.
 //
+// It follows the pad's HID channels and copies every input report into a
+// mapped file (ck_ds5_shared.h), where the app reads it (A5.8). When the pad
+// sends the simple report, it slips two output reports to the pad into the
+// stream to BTServer's chip, between two of BTServer's own packets: they light
+// the player LED and switch the pad to the full report, with the touchpad.
+// The chip later counts them among the packets it is done with; the filter
+// takes them out of that count, so BTServer's flow control stays right.
+//
 // The method (hooking read and write on BTServer's HCI socket) comes from
 // MFiWrapper's BTServerFilter, by Jason Fetters, 2014, GPLv3 or later.
 
+#include "ck_ds5.h"
 #include "ck_ds5_shared.h"
 #include "ck_hci_filter.h"
 
@@ -22,6 +31,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -73,7 +83,11 @@ static ssize_t (*orig_recv)(int, void *, size_t, int);
 static ssize_t (*orig_send)(int, const void *, size_t, int);
 
 // The HCI socket and the two directions of its stream. Guarded by lock.
+// write_lock is held around every write to the HCI socket, so that the
+// filter's own packets never land in the middle of one of BTServer's. Take
+// write_lock before lock, never the other way round.
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 static int hci_fd = -1;
 static CKHciFilter from_chip; // events and ACL data: rewrites inquiry results
 static CKHciFilter to_chip;   // commands and ACL data: only watched
@@ -99,6 +113,14 @@ static size_t seen_count;
 #define HID_LOG_MAX 16      // HID messages other than input reports, per connection
 #define HID_FIRST_INPUTS 3  // input reports logged one by one, per connection
 #define HID_SUMMARY_SECONDS 10
+// Asking a pad for the full report: how many times, and how many more simple
+// reports to wait for before asking again.
+#define SWITCH_TRIES 3
+#define SWITCH_RETRY_REPORTS 100
+// The lightbar once the pad is on the iPad: the PS5's blue for player 1.
+#define LIGHTBAR_RED 0x00
+#define LIGHTBAR_GREEN 0x00
+#define LIGHTBAR_BLUE 0x80
 
 typedef struct
 {
@@ -119,8 +141,17 @@ static struct
 	unsigned logged;        // other HID messages logged in this connection
 	uint8_t last_id;
 	uint16_t last_len;
+	uint8_t acl_flags;      // the flags BTServer puts on its packets to the pad
+	bool want_switch;       // send the output reports at the next chance
+	unsigned switch_tries;
+	unsigned simple_since_try;
+	uint8_t output_seq;
+	unsigned injected;      // output reports the chip has not yet counted as done
+	bool full;              // the pad sends the full report
 } pads[PADS_MAX];
 static size_t pad_count;
+// Some pad has want_switch set. Read without the lock after every read.
+static atomic_bool switch_wanted;
 
 // Where the pad's input reports go for other processes (ck_ds5_shared.h).
 static CKDS5Shared *shared;
@@ -245,7 +276,8 @@ static void remember_pad(const uint8_t *bdaddr)
 	pad_count++;
 }
 
-// Maps SHARED_PATH the first time a pad connects.
+// Maps SHARED_PATH once BTServer has the HCI socket. Attaching says "no pad",
+// so a BTServer that crashed with a button held does not leave it held.
 static void open_shared(void)
 {
 	if(shared_tried)
@@ -284,7 +316,7 @@ static void pad_connected(const uint8_t *bdaddr, uint16_t handle)
 	pads[i].connected = true;
 	pads[i].handle = handle;
 	pads[i].window_start = time(NULL);
-	open_shared();
+	pads[i].acl_flags = CK_HCI_ACL_START;
 }
 
 static void pad_disconnected(uint16_t handle)
@@ -295,6 +327,9 @@ static void pad_disconnected(uint16_t handle)
 	char a[18];
 	log_line("pad %s gone after %u input reports", addr_str(pads[i].bdaddr, a), pads[i].inputs);
 	pads[i].connected = false;
+	// The chip forgets what it had for this connection, and so does BTServer.
+	pads[i].injected = 0;
+	pads[i].want_switch = false;
 	if(shared)
 		ck_ds5_shared_write(shared, NULL, 0);
 }
@@ -312,6 +347,18 @@ static const char *hidp_type(uint8_t header)
 		case 0xa: return "DATA";
 		default: return "other";
 	}
+}
+
+// A simple report came in: ask for the full one the first time, and again
+// after SWITCH_RETRY_REPORTS more, up to SWITCH_TRIES times.
+static void want_full_report(int i)
+{
+	if(pads[i].want_switch || pads[i].switch_tries >= SWITCH_TRIES || !pads[i].interrupt.remote)
+		return;
+	if(pads[i].switch_tries > 0 && ++pads[i].simple_since_try < SWITCH_RETRY_REPORTS)
+		return;
+	pads[i].want_switch = true;
+	atomic_store(&switch_wanted, true);
 }
 
 // One HIDP message on a pad's control or interrupt channel: input reports are
@@ -332,6 +379,14 @@ static void pad_hid(int i, bool from_pad, const char *channel, const uint8_t *ms
 		if(pads[i].inputs <= HID_FIRST_INPUTS)
 			log_line("hid input report 0x%02x from %s on %s, %u bytes", msg[1], addr_str(pads[i].bdaddr, a), channel,
 				len - 1);
+		if(msg[1] == CK_DS5_REPORT_ID_INPUT)
+			want_full_report(i);
+		else if(msg[1] == CK_DS5_REPORT_ID_BT_INPUT && !pads[i].full)
+		{
+			pads[i].full = true;
+			log_line("%s sends the full report now, after %u requests", addr_str(pads[i].bdaddr, a),
+				pads[i].switch_tries);
+		}
 		time_t now = time(NULL);
 		if(now - pads[i].window_start >= HID_SUMMARY_SECONDS)
 		{
@@ -410,6 +465,8 @@ static void on_acl(bool from_chip, const CKHciPacket *p)
 	const uint8_t *d = p->prefix;
 	uint16_t cid = le16(d + 2);
 	int pad = pad_by_handle(p->id);
+	if(pad >= 0 && !from_chip)
+		pads[pad].acl_flags = p->flags;
 	if(cid == 0x0001)
 	{
 		l2cap_signal(pad, from_chip, d, p->length);
@@ -479,7 +536,10 @@ static void on_packet_from_chip(void *user, const CKHciPacket *p)
 		case 0x0e:
 			if(p->length >= 4 && d[3] != 0)
 				log_line("command 0x%04x failed, status 0x%02x", le16(d + 1), d[3]);
+			else if(p->length >= 9 && le16(d + 1) == 0x1005)
+				log_line("chip takes %u ACL packets of %u bytes at a time", le16(d + 7), le16(d + 4));
 			break;
+		case 0x1a: log_line("chip ACL buffers overflowed, link type %u", d[0]); break;
 		case 0x0f:
 			if(d[0] != 0)
 				log_line("command 0x%04x refused, status 0x%02x", le16(d + 2), d[0]);
@@ -529,6 +589,24 @@ static void on_packet_to_chip(void *user, const CKHciPacket *p)
 	}
 }
 
+// The chip is done with count packets of handle: leave out the output
+// reports the filter sent, which BTServer never counted as sent.
+static uint16_t on_completed(void *user, uint16_t handle, uint16_t count)
+{
+	(void)user;
+	int i = pad_by_handle(handle);
+	if(i < 0 || pads[i].injected == 0 || count == 0)
+		return count;
+	uint16_t ours = count < pads[i].injected ? count : (uint16_t)pads[i].injected;
+	pads[i].injected -= ours;
+	if(pads[i].injected == 0)
+	{
+		char a[18];
+		log_line("chip sent the output reports to %s", addr_str(pads[i].bdaddr, a));
+	}
+	return (uint16_t)(count - ours);
+}
+
 // --- the HCI socket ---
 
 static bool hci_control_id(uint32_t *id)
@@ -558,13 +636,14 @@ static bool hci_control_id(uint32_t *id)
 
 static void start_hci(int fd)
 {
-	CKHciFilterCallbacks from = { NULL, on_packet_from_chip, on_device_class };
-	CKHciFilterCallbacks to = { NULL, on_packet_to_chip, NULL };
+	CKHciFilterCallbacks from = { NULL, on_packet_from_chip, on_device_class, on_completed };
+	CKHciFilterCallbacks to = { NULL, on_packet_to_chip, NULL, NULL };
 	pthread_mutex_lock(&lock);
 	hci_fd = fd;
 	ck_hci_filter_init(&from_chip, true, &from);
 	ck_hci_filter_init(&to_chip, false, &to);
 	lost_sync_logged[0] = lost_sync_logged[1] = false;
+	open_shared();
 	pthread_mutex_unlock(&lock);
 }
 
@@ -585,6 +664,110 @@ static void feed(int fd, CKHciFilter *filter, int direction, const void *buf, ss
 		}
 	}
 	pthread_mutex_unlock(&lock);
+}
+
+// The two output reports for a pad: the first ends the lightbar's startup
+// animation, the second lights player LED 1 and the lightbar. Either one
+// switches the pad to the full report.
+#define SWITCH_REPORTS 2
+#define SWITCH_PACKET_SIZE (9 + 1 + CK_DS5_BT_OUTPUT_SIZE)
+
+static size_t switch_packet(int i, bool first, uint8_t out[SWITCH_PACKET_SIZE])
+{
+	CKDS5Output output;
+	memset(&output, 0, sizeof(output));
+	output.seq = pads[i].output_seq;
+	pads[i].output_seq = (uint8_t)((pads[i].output_seq + 1) & 0x0f);
+	if(first)
+		output.lightbar_fade_out = true;
+	else
+	{
+		output.set_lightbar = true;
+		output.red = LIGHTBAR_RED;
+		output.green = LIGHTBAR_GREEN;
+		output.blue = LIGHTBAR_BLUE;
+		output.set_player_leds = true;
+		output.player_leds = CK_DS5_PLAYER_LEDS_1;
+	}
+	uint8_t hid[1 + CK_DS5_BT_OUTPUT_SIZE];
+	hid[0] = 0xa2; // HIDP DATA, output report
+	ck_ds5_bt_output_report(hid + 1, &output);
+	return ck_hci_acl_frame(out, SWITCH_PACKET_SIZE, pads[i].handle, pads[i].acl_flags, pads[i].interrupt.remote, hid,
+		sizeof(hid));
+}
+
+// Called after every read from the chip: sends the output reports a pad is
+// waiting for, if BTServer is not halfway through writing a packet. When it
+// is busy, the next read tries again.
+static void switch_pads(void)
+{
+	if(!atomic_load(&switch_wanted))
+		return;
+	if(pthread_mutex_trylock(&write_lock) != 0)
+		return;
+	static uint8_t packets[SWITCH_REPORTS][SWITCH_PACKET_SIZE];
+	size_t sizes[SWITCH_REPORTS] = { 0 };
+	int fd = -1, i = -1;
+	uint16_t handle = 0;
+	unsigned attempt = 0;
+	pthread_mutex_lock(&lock);
+	if(hci_fd >= 0 && ck_hci_filter_between_packets(&to_chip))
+	{
+		bool more = false;
+		for(size_t k = 0; k < pad_count; k++)
+		{
+			if(!pads[k].connected || !pads[k].want_switch)
+				continue;
+			if(i >= 0)
+			{
+				more = true;
+				break;
+			}
+			i = (int)k;
+		}
+		atomic_store(&switch_wanted, more);
+	}
+	if(i >= 0)
+	{
+		fd = hci_fd;
+		handle = pads[i].handle;
+		for(int r = 0; r < SWITCH_REPORTS; r++)
+			sizes[r] = switch_packet(i, r == 0, packets[r]);
+		pads[i].want_switch = false;
+		pads[i].simple_since_try = 0;
+		attempt = ++pads[i].switch_tries;
+		pads[i].injected += SWITCH_REPORTS;
+	}
+	pthread_mutex_unlock(&lock);
+
+	if(i >= 0)
+	{
+		int sent = 0;
+		int error = 0;
+		for(int r = 0; r < SWITCH_REPORTS; r++)
+		{
+			ssize_t w = orig_write(fd, packets[r], sizes[r]);
+			if(w != (ssize_t)sizes[r])
+			{
+				error = w < 0 ? errno : EIO;
+				break;
+			}
+			// The to_chip filter follows the stream, so it sees them too.
+			feed(fd, &to_chip, 1, packets[r], w);
+			sent++;
+		}
+		pthread_mutex_lock(&lock);
+		if(pads[i].connected && pads[i].handle == handle)
+			pads[i].injected -= (unsigned)(SWITCH_REPORTS - sent);
+		pthread_mutex_unlock(&lock);
+		char a[18];
+		if(sent == SWITCH_REPORTS)
+			log_line("asked %s for the full report, try %u", addr_str(pads[i].bdaddr, a), attempt);
+		else
+			log_line("could not ask %s for the full report, try %u: %s", addr_str(pads[i].bdaddr, a), attempt,
+				strerror(error));
+	}
+	pthread_mutex_unlock(&write_lock);
 }
 
 // --- hooks ---
@@ -666,16 +849,24 @@ static ssize_t new_read(int fd, void *buf, size_t n)
 {
 	ssize_t r = orig_read(fd, buf, n);
 	int saved = errno;
-	feed(fd, &from_chip, 0, buf, r);
+	if(fd == hci_fd)
+	{
+		feed(fd, &from_chip, 0, buf, r);
+		switch_pads();
+	}
 	errno = saved;
 	return r;
 }
 
 static ssize_t new_write(int fd, const void *buf, size_t n)
 {
+	if(fd != hci_fd)
+		return orig_write(fd, buf, n);
+	pthread_mutex_lock(&write_lock);
 	ssize_t r = orig_write(fd, buf, n);
 	int saved = errno;
 	feed(fd, &to_chip, 1, buf, r);
+	pthread_mutex_unlock(&write_lock);
 	errno = saved;
 	return r;
 }
@@ -694,18 +885,27 @@ static ssize_t new_recv(int fd, void *buf, size_t n, int flags)
 	ssize_t r = orig_recv(fd, buf, n, flags);
 	int saved = errno;
 	note_recv_send(fd);
-	if(!(flags & MSG_PEEK))
+	if(!(flags & MSG_PEEK) && fd == hci_fd)
+	{
 		feed(fd, &from_chip, 0, buf, r);
+		switch_pads();
+	}
 	errno = saved;
 	return r;
 }
 
+// The filter's own packets go out with write(), under write_lock, which keeps
+// them apart from BTServer's whether it uses write() or send().
 static ssize_t new_send(int fd, const void *buf, size_t n, int flags)
 {
+	if(fd != hci_fd)
+		return orig_send(fd, buf, n, flags);
+	pthread_mutex_lock(&write_lock);
 	ssize_t r = orig_send(fd, buf, n, flags);
 	int saved = errno;
 	note_recv_send(fd);
 	feed(fd, &to_chip, 1, buf, r);
+	pthread_mutex_unlock(&write_lock);
 	errno = saved;
 	return r;
 }
