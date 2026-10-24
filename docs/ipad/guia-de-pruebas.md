@@ -14,20 +14,21 @@ Todo lo que se hace en la laptop lo hace un agente, sin preguntarte, con una ses
 
 ## 1. Bajar el `.deb`
 
-- **De un PR:** en la pestaña **Checks** del PR, abre **iOS CI**, baja hasta **Artifacts** y descarga `ipad-debs`.
-- **Lo último de `main`:** en **Actions > iOS CI**, abre la corrida más reciente de `main` y descarga `ipad-debs` de la misma forma.
-
-Llega como `.zip`: descomprímelo en una carpeta. GitHub pide haber iniciado sesión para descargarlo.
+El CI publica los `.deb` de cada PR y de `main` en [Releases](https://github.com/HuAxX27/IpadMini-Chiakiport/releases), como pre-releases que se bajan sin iniciar sesión: `ipad-pr-<N>` trae lo último del PR N e `ipad-main` lo último de `main`. Un PR que viene de un fork no tiene; su `.deb` queda solo en el artefacto `ipad-debs` del PR (**Checks > iOS CI > Artifacts**), que pide iniciar sesión.
 
 ## 2. Instalar
 
-En PowerShell, dentro de la carpeta descomprimida, con la ruta de tu copia del repo:
+`fetch-debs.ps1` baja los `.deb` y los instala en el iPad en un solo paso, sin preguntar nada. En PowerShell, desde tu copia del repo:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\ruta\al\repo\ios\toolchain\deploy.ps1 -Ip ipad
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1 -Pr 93                       # todo lo del PR 93
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1 -Pr 93 -Package chiakiport   # solo un paquete
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1                              # lo último de main
 ```
 
-Instala todos los `.deb` de la carpeta y actualiza la pantalla de inicio. `-Ip ipad` usa tu alias de SSH, que entra sin contraseña; en otra PC, usa la IP del iPad (**Ajustes > Wi-Fi > (i)** junto a tu red) y agrega `-SetupKey` la primera vez. Para instalar uno solo: `-Path paquete.deb`.
+Actualiza la pantalla de inicio al terminar. Solo instala el build del último commit: si el CI todavía lo está armando (unos 3 minutos después de cada push) o falló, se detiene y lo dice. Entra por tu alias de SSH `ipad`, que no pide contraseña; en otra PC, agrega `-Ip` con la IP del iPad (**Ajustes > Wi-Fi > (i)** junto a tu red) y corre una vez `ios\toolchain\deploy.ps1 -Ip <IP> -SetupKey` para que tampoco la pida. Las demás opciones están en [`ios/toolchain/README.md`](../../ios/toolchain/README.md#bajar-e-instalar-lo-del-ci).
+
+Si ya tienes los `.deb` en una carpeta, `deploy.ps1` los instala: `powershell -ExecutionPolicy Bypass -File C:\ruta\al\repo\ios\toolchain\deploy.ps1 -Ip ipad` dentro de esa carpeta, o con `-Path paquete.deb` para uno solo.
 
 | Paquete | Qué es | Cómo se usa |
 |---|---|---|
