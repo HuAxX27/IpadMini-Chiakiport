@@ -477,6 +477,157 @@ static size_t make_nal(uint8_t *out, size_t payload_size)
 	return n;
 }
 
+static void test_access_units(void)
+{
+	// SPS, PPS and a two-slice IDR frame; a P frame; an AUD and a P frame of
+	// two slices, the second with first_mb_in_slice 1 (0x40: ue(v) "010").
+	static const uint8_t stream[] = {
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x4d, 0x40, 0x20,
+		0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0x80,
+		0x00, 0x00, 0x01, 0x65, 0x88, 0x11,
+		0x00, 0x00, 0x01, 0x65, 0x40, 0x22,
+		0x00, 0x00, 0x01, 0x41, 0x9a, 0x33,
+		0x00, 0x00, 0x01, 0x09, 0x10,
+		0x00, 0x00, 0x01, 0x41, 0x9a, 0x44,
+		0x00, 0x00, 0x01, 0x41, 0x40, 0x55};
+	static const size_t expected[][2] = { { 0, 27 }, { 27, 6 }, { 33, 17 } };
+	size_t pos = 0;
+	const uint8_t *au = NULL;
+	size_t au_size = 0;
+	for(size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+	{
+		CHECK(ck_h264_next_access_unit(stream, sizeof(stream), &pos, &au, &au_size));
+		CHECK(au == stream + expected[i][0] && au_size == expected[i][1]);
+	}
+	CHECK(!ck_h264_next_access_unit(stream, sizeof(stream), &pos, &au, &au_size));
+	CHECK(pos == sizeof(stream));
+
+	// Only the SPS and PPS, as the core sends them first: one access unit.
+	pos = 0;
+	CHECK(ck_h264_next_access_unit(PS5_HEADER, sizeof(PS5_HEADER), &pos, &au, &au_size));
+	CHECK(au == PS5_HEADER && au_size == sizeof(PS5_HEADER));
+	CHECK(!ck_h264_next_access_unit(PS5_HEADER, sizeof(PS5_HEADER), &pos, &au, &au_size));
+
+	// No start code, or nothing at all.
+	static const uint8_t junk[] = { 0x12, 0x34, 0x00, 0x00, 0x02 };
+	pos = 0;
+	CHECK(!ck_h264_next_access_unit(junk, sizeof(junk), &pos, &au, &au_size));
+	pos = 0;
+	CHECK(!ck_h264_next_access_unit(junk, 0, &pos, &au, &au_size));
+	CHECK(!ck_h264_next_access_unit(NULL, 4, &pos, &au, &au_size));
+}
+
+// Writes bits into a NAL unit's payload, adding emulation prevention bytes
+// the way an encoder must, so the reader has to skip them.
+typedef struct
+{
+	uint8_t buf[64];
+	size_t size;
+	unsigned bits;
+	uint8_t cur;
+	unsigned zeros;
+} BitWriter;
+
+static void put_byte(BitWriter *w, uint8_t byte)
+{
+	if(w->zeros >= 2 && byte <= 3)
+	{
+		w->buf[w->size++] = 3;
+		w->zeros = 0;
+	}
+	w->buf[w->size++] = byte;
+	w->zeros = byte ? 0 : w->zeros + 1;
+}
+
+static void put_bit(BitWriter *w, unsigned bit)
+{
+	w->cur = (uint8_t)((w->cur << 1) | (bit & 1));
+	if(++w->bits == 8)
+	{
+		put_byte(w, w->cur);
+		w->bits = 0;
+		w->cur = 0;
+	}
+}
+
+static void put_ue(BitWriter *w, uint32_t value)
+{
+	uint64_t v = (uint64_t)value + 1;
+	int len = 0;
+	while((v >> len) > 1)
+		len++;
+	for(int i = 0; i < len; i++)
+		put_bit(w, 0);
+	for(int i = len; i >= 0; i--)
+		put_bit(w, (unsigned)(v >> i) & 1);
+}
+
+// A slice NAL unit: header byte, first_mb_in_slice, slice_type, then a 1 and
+// zeros up to the byte (enough for the reader) and one more payload byte.
+static size_t make_slice(BitWriter *w, uint8_t header, uint32_t first_mb, uint32_t slice_type)
+{
+	memset(w, 0, sizeof(*w));
+	w->buf[w->size++] = header;
+	put_ue(w, first_mb);
+	put_ue(w, slice_type);
+	put_bit(w, 1);
+	while(w->bits)
+		put_bit(w, 0);
+	put_byte(w, 0x5a);
+	return w->size;
+}
+
+static bool has_emulation_prevention(const uint8_t *buf, size_t size)
+{
+	for(size_t i = 2; i < size; i++)
+		if(!buf[i - 2] && !buf[i - 1] && buf[i] == 3)
+			return true;
+	return false;
+}
+
+static void test_slice_type(void)
+{
+	// The PS5's IDR frame starts with an I slice (slice_type 7), its P frames with P slices (5).
+	static const uint8_t idr[] = { 0x65, 0x88, 0x84 };
+	static const uint8_t p[] = { 0x41, 0x9a, 0x02 };
+	CHECK(ck_h264_slice_type(idr, sizeof(idr)) == CK_H264_SLICE_I);
+	CHECK(ck_h264_slice_type(p, sizeof(p)) == CK_H264_SLICE_P);
+
+	// Every slice_type with first_mb_in_slice small and large; the largest
+	// make the writer add emulation prevention bytes the reader must skip.
+	static const uint32_t first_mbs[] = { 0, 1, 59, 2039, 65535, (1u << 23) - 1, (1u << 24) + 5, UINT32_MAX - 1 };
+	bool saw_emulation = false;
+	for(size_t i = 0; i < sizeof(first_mbs) / sizeof(first_mbs[0]); i++)
+	{
+		for(uint32_t type = 0; type <= 9; type++)
+		{
+			BitWriter w;
+			size_t size = make_slice(&w, type % 2 ? 0x41 : 0x65, first_mbs[i], type);
+			saw_emulation |= has_emulation_prevention(w.buf, size);
+			CHECK(ck_h264_slice_type(w.buf, size) == (int)(type % 5));
+			// Cut short, the header cannot be read.
+			for(size_t cut = 0; cut + 1 < size; cut++)
+			{
+				int got = ck_h264_slice_type(w.buf, cut);
+				CHECK(got == -1 || got == (int)(type % 5));
+			}
+		}
+	}
+	CHECK(saw_emulation);
+
+	// slice_type above 9, and NAL units that are not slices.
+	BitWriter w;
+	size_t size = make_slice(&w, 0x41, 0, 10);
+	CHECK(ck_h264_slice_type(w.buf, size) == -1);
+	static const uint8_t sps[] = { 0x67, 0x88, 0x84 };
+	CHECK(ck_h264_slice_type(sps, sizeof(sps)) == -1);
+	CHECK(ck_h264_slice_type(idr, 1) == -1);
+	CHECK(ck_h264_slice_type(NULL, 3) == -1);
+	// 32 leading zeros is not a ue(v) of 32 bits.
+	static const uint8_t too_long[] = { 0x41, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x01, 0xff };
+	CHECK(ck_h264_slice_type(too_long, sizeof(too_long)) == -1);
+}
+
 static void test_random_streams_round_trip(void)
 {
 	enum { ROUNDS = 3000, MAX_UNITS = 12 };
@@ -665,7 +816,8 @@ static int check_capture(const char *path)
 	//    slices before the store is ready.
 	CKH264ParamStore store;
 	ck_h264_param_store_reset(&store);
-	size_t access_units = 0, idr_units = 0, param_changes = 0, largest = 0, au_start = 0;
+	size_t access_units = 0, idr_units = 0, param_changes = 0, largest = 0, au_start = 0, api_pos = 0;
+	size_t slice_types[5] = {0};
 	bool au_has_slice = false;
 	double seconds = 0;
 	for(size_t i = 0; i <= reference.count; i++)
@@ -684,6 +836,13 @@ static int check_capture(const char *path)
 		au_start = au_end;
 		au_has_slice = !end && (TYPE_BIT(CK_H264_NAL_TYPE(reference.nal[i].data[0])) & SLICE_BITS);
 
+		// ck_h264_next_access_unit(), which the CK Video app replays captures
+		// with, must split the same way.
+		const uint8_t *api_au = NULL;
+		size_t api_au_size = 0;
+		CHECK(ck_h264_next_access_unit(buf, size, &api_pos, &api_au, &api_au_size));
+		CHECK(api_au == au && api_au_size == au_size);
+
 		clock_t t0 = clock();
 		CKH264Result r = ck_h264_annexb_to_avcc(au, au_size, CK_H264_DROP_FOR_VIDEOTOOLBOX, avcc, capacity, &info);
 		CKH264ParamUpdate update = ck_h264_param_store_update(&store, &info.param_sets);
@@ -696,6 +855,18 @@ static int check_capture(const char *path)
 		CHECK((list_types(&got) & CK_H264_DROP_FOR_VIDEOTOOLBOX) == 0);
 		if(info.nal_types & SLICE_BITS)
 		{
+			// Every slice header must read, and an IDR frame holds only I slices.
+			for(size_t n = 0; n < got.count; n++)
+			{
+				if(!(TYPE_BIT(CK_H264_NAL_TYPE(got.nal[n].data[0])) & SLICE_BITS))
+					continue;
+				int slice_type = ck_h264_slice_type(got.nal[n].data, got.nal[n].size);
+				CHECK(slice_type >= 0);
+				if(slice_type >= 0)
+					slice_types[slice_type]++;
+				if(info.nal_types & TYPE_BIT(CK_H264_NAL_IDR))
+					CHECK(slice_type == CK_H264_SLICE_I);
+			}
 			CHECK(ck_h264_param_store_ready(&store));
 			access_units++;
 			idr_units += (info.nal_types & TYPE_BIT(CK_H264_NAL_IDR)) != 0;
@@ -703,6 +874,10 @@ static int check_capture(const char *path)
 				largest = au_size;
 		}
 	}
+
+	const uint8_t *api_au = NULL;
+	size_t api_au_size = 0;
+	CHECK(!ck_h264_next_access_unit(buf, size, &api_pos, &api_au, &api_au_size));
 
 	printf("%s: %zu bytes, %zu NAL units (", path, size, reference.count);
 	const char *sep = "";
@@ -718,6 +893,8 @@ static int check_capture(const char *path)
 	if(store.sps_size >= 4)
 		printf("  SPS %zu bytes, profile_idc %u, level_idc %u; PPS %zu bytes; %zu parameter set change(s)\n",
 			store.sps_size, (unsigned)store.sps[1], (unsigned)store.sps[3], store.pps_size, param_changes);
+	printf("  slices: %zu I, %zu P, %zu B, %zu SP, %zu SI\n", slice_types[CK_H264_SLICE_I], slice_types[CK_H264_SLICE_P],
+		slice_types[CK_H264_SLICE_B], slice_types[CK_H264_SLICE_SP], slice_types[CK_H264_SLICE_SI]);
 	printf("  %zu frames, %zu IDR, largest %zu bytes, %.1f us per frame here\n",
 		access_units, idr_units, largest, access_units ? seconds * 1e6 / (double)access_units : 0.0);
 
@@ -787,6 +964,8 @@ int main(int argc, char **argv)
 	test_input_too_large();
 	test_frame_for_videotoolbox();
 	test_param_store();
+	test_access_units();
+	test_slice_type();
 	test_random_streams_round_trip();
 	test_random_bytes_against_reference();
 

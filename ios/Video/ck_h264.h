@@ -27,6 +27,13 @@ extern "C" {
 #define CK_H264_NAL_AUD 9
 #define CK_H264_NAL_FILLER 12
 
+/** slice_type values (H.264 table 7-6), modulo 5. */
+#define CK_H264_SLICE_P 0
+#define CK_H264_SLICE_B 1
+#define CK_H264_SLICE_I 2
+#define CK_H264_SLICE_SP 3
+#define CK_H264_SLICE_SI 4
+
 /** nal_unit_type of a NAL unit, from its first byte. */
 #define CK_H264_NAL_TYPE(first_byte) ((unsigned)(first_byte) & 0x1fu)
 
@@ -93,6 +100,25 @@ typedef struct ck_h264_frame_info_t
  * keeps them too.
  */
 bool ck_h264_annexb_next_nal(const uint8_t *buf, size_t size, size_t *pos, const uint8_t **nal, size_t *nal_size);
+
+/**
+ * Finds the next access unit (one frame, with the SPS, PPS or SEI before it)
+ * of an Annex B stream, such as a capture from A2.8, starting at *pos (0 on
+ * the first call). Sets *au and *au_size to it, moves *pos to the next one
+ * and returns true, or returns false when no NAL unit is left. A new access
+ * unit starts at an AUD, SEI, SPS or PPS, or at a slice with
+ * first_mb_in_slice 0, once the current one has a slice: H.264 7.4.1.2.3,
+ * enough for streams without slices out of order.
+ */
+bool ck_h264_next_access_unit(const uint8_t *buf, size_t size, size_t *pos, const uint8_t **au, size_t *au_size);
+
+/**
+ * slice_type of a slice NAL unit (nal_unit_type 1 or 5, without its start
+ * code), modulo 5: one of CK_H264_SLICE_*. Reads the slice header past
+ * emulation prevention bytes. Returns -1 for any other NAL unit, or when the
+ * header is cut short or out of range.
+ */
+int ck_h264_slice_type(const uint8_t *nal, size_t nal_size);
 
 /**
  * Upper bound of the AVCC size of any Annex B buffer of annexb_size bytes,
