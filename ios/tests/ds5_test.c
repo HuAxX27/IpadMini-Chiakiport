@@ -214,6 +214,50 @@ static void test_rejects(void)
 	CHECK(memcmp(&s, &before, sizeof(s)) == 0);
 }
 
+// The two output reports ckbtfilter sends, with CRCs computed independently by
+// Python's zlib.crc32(b'\xa2' + report[:74]).
+static void test_bt_output(void)
+{
+	uint8_t r[CK_DS5_BT_OUTPUT_SIZE];
+	CKDS5Output o;
+
+	memset(&o, 0, sizeof(o));
+	o.lightbar_fade_out = true;
+	ck_ds5_bt_output_report(r, &o);
+	static const uint8_t fade_out_crc[4] = { 0x43, 0xe6, 0x31, 0x36 };
+	CHECK_EQ(r[0], CK_DS5_REPORT_ID_BT_OUTPUT);
+	CHECK_EQ(r[1], 0x00); // sequence 0
+	CHECK_EQ(r[2], 0x10); // tag
+	CHECK_EQ(r[4], 0x00); // valid_flag1: nothing
+	CHECK_EQ(r[41], 0x02); // valid_flag2: lightbar setup
+	CHECK_EQ(r[44], 0x02); // lightbar setup: fade out
+	CHECK(memcmp(r + 74, fade_out_crc, 4) == 0);
+
+	memset(&o, 0, sizeof(o));
+	o.seq = 1;
+	o.set_lightbar = true;
+	o.blue = 0x80;
+	o.set_player_leds = true;
+	o.player_leds = CK_DS5_PLAYER_LEDS_1;
+	ck_ds5_bt_output_report(r, &o);
+	static const uint8_t leds_crc[4] = { 0x41, 0x42, 0x09, 0xdc };
+	CHECK_EQ(r[1], 0x10); // sequence 1, high nibble
+	CHECK_EQ(r[4], 0x14); // valid_flag1: lightbar and player LEDs
+	CHECK_EQ(r[41], 0x00);
+	CHECK_EQ(r[46], 0x04);
+	CHECK_EQ(r[47], 0x00);
+	CHECK_EQ(r[48], 0x00);
+	CHECK_EQ(r[49], 0x80);
+	CHECK(memcmp(r + 74, leds_crc, 4) == 0);
+
+	// The sequence wraps at 16 and the LEDs keep to their five bits.
+	o.seq = 17;
+	o.player_leds = 0xff;
+	ck_ds5_bt_output_report(r, &o);
+	CHECK_EQ(r[1], 0x10);
+	CHECK_EQ(r[46], 0x1f);
+}
+
 int main(void)
 {
 	test_crc32();
@@ -224,6 +268,7 @@ int main(void)
 	test_hat();
 	test_sticks();
 	test_rejects();
+	test_bt_output();
 	if(failures)
 	{
 		fprintf(stderr, "ds5_test: %d failure(s)\n", failures);

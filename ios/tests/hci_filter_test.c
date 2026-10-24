@@ -49,7 +49,7 @@ static void on_device_class(void *user, const CKHciDeviceClass *device)
 static void init(CKHciFilter *filter, Log *log, bool rewrite)
 {
 	memset(log, 0, sizeof(*log));
-	CKHciFilterCallbacks cb = { log, on_packet, on_device_class };
+	CKHciFilterCallbacks cb = { log, on_packet, on_device_class, NULL };
 	ck_hci_filter_init(filter, rewrite, &cb);
 }
 
@@ -430,6 +430,117 @@ static void test_lost_sync(void)
 	CHECK_EQ(log.packets, 0);
 }
 
+// What the completed-packets callback saw, and how many packets it takes off handle 0x00c.
+typedef struct completed_t
+{
+	int calls;
+	uint16_t handle;
+	uint16_t count;
+	uint16_t take;
+} Completed;
+
+static uint16_t on_completed(void *user, uint16_t handle, uint16_t count)
+{
+	Completed *c = user;
+	c->calls++;
+	c->handle = handle;
+	c->count = count;
+	if(handle != 0x00c)
+		return count;
+	uint16_t ours = count < c->take ? count : c->take;
+	c->take -= ours;
+	return (uint16_t)(count - ours);
+}
+
+static void test_completed_rewritten(void)
+{
+	// Number Of Completed Packets for two connections: 3 on 0x00c, 1 on 0x00d.
+	static const uint8_t event[] = { 0x04, 0x13, 9, 2, 0x0c, 0x00, 3, 0, 0x0d, 0x00, 1, 0 };
+	uint8_t buf[sizeof(event)];
+	CKHciFilter f;
+	Completed c;
+
+	memset(&c, 0, sizeof(c));
+	c.take = 2;
+	CKHciFilterCallbacks cb = { &c, NULL, NULL, on_completed };
+	ck_hci_filter_init(&f, true, &cb);
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, sizeof(buf));
+	CHECK_EQ(c.calls, 2);
+	CHECK_EQ(buf[6], 1); // 3 less the 2 taken
+	CHECK_EQ(buf[7], 0);
+	CHECK_EQ(buf[10], 1); // the other connection's count is left alone
+	CHECK_EQ(c.take, 0);
+	CHECK(ck_hci_filter_between_packets(&f));
+
+	// More than it takes: only what it takes comes off; the next event passes as is.
+	c.take = 1;
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, sizeof(buf));
+	CHECK_EQ(buf[6], 2);
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, sizeof(buf));
+	CHECK_EQ(buf[6], 3);
+
+	// A count past 255 has its high byte rewritten too.
+	static const uint8_t big[] = { 0x04, 0x13, 5, 1, 0x0c, 0x00, 0x01, 0x01 };
+	uint8_t big_buf[sizeof(big)];
+	memcpy(big_buf, big, sizeof(big));
+	c.take = 2;
+	ck_hci_filter_feed(&f, big_buf, sizeof(big_buf));
+	CHECK_EQ(big_buf[6], 0xff);
+	CHECK_EQ(big_buf[7], 0x00);
+
+	// The two bytes of a count in different reads: left alone and counted.
+	c.take = 2;
+	c.calls = 0;
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, 7);
+	ck_hci_filter_feed(&f, buf + 7, sizeof(buf) - 7);
+	CHECK_EQ(buf[6], 3);
+	CHECK_EQ(f.completed_split, 1);
+	CHECK_EQ(c.calls, 1); // only 0x00d, whose count came whole
+	CHECK_EQ(c.take, 2);
+
+	// Watching only, or with no callback, nothing changes.
+	ck_hci_filter_init(&f, false, &cb);
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, sizeof(buf));
+	CHECK(memcmp(buf, event, sizeof(buf)) == 0);
+	CHECK_EQ(c.calls, 1);
+	Log log;
+	init(&f, &log, true);
+	memcpy(buf, event, sizeof(buf));
+	ck_hci_filter_feed(&f, buf, sizeof(buf));
+	CHECK(memcmp(buf, event, sizeof(buf)) == 0);
+	CHECK_EQ(log.packets, 1);
+}
+
+static void test_acl_frame(void)
+{
+	static const uint8_t hid[] = { 0xa2, 0x31, 0x00 };
+	static const uint8_t expected[] = { 0x02, 0x0c, 0x20, 7, 0, 3, 0, 0x43, 0x00, 0xa2, 0x31, 0x00 };
+	uint8_t out[16];
+	CHECK_EQ(ck_hci_acl_frame(out, sizeof(out), 0x00c, CK_HCI_ACL_START, 0x0043, hid, sizeof(hid)), sizeof(expected));
+	CHECK(memcmp(out, expected, sizeof(expected)) == 0);
+	CHECK_EQ(ck_hci_acl_frame(out, sizeof(expected) - 1, 0x00c, CK_HCI_ACL_START, 0x0043, hid, sizeof(hid)), 0);
+
+	// The filter reads it back as the same packet, and knows where packets end.
+	CKHciFilter f;
+	Log log;
+	init(&f, &log, false);
+	CHECK(ck_hci_filter_between_packets(&f));
+	ck_hci_filter_feed(&f, out, 5);
+	CHECK(!ck_hci_filter_between_packets(&f));
+	ck_hci_filter_feed(&f, out + 5, sizeof(expected) - 5);
+	CHECK(ck_hci_filter_between_packets(&f));
+	CHECK_EQ(log.last_packet.id, 0x00c);
+	CHECK_EQ(log.last_packet.flags, CK_HCI_ACL_START);
+	CHECK_EQ(log.last_packet.length, 7);
+	CHECK_EQ(log.last_packet.prefix[2], 0x43);
+	CHECK_EQ(log.last_packet.prefix[4], 0xa2);
+}
+
 int main(void)
 {
 	test_cod_classes();
@@ -446,6 +557,8 @@ int main(void)
 	test_observe_only();
 	test_commands();
 	test_lost_sync();
+	test_completed_rewritten();
+	test_acl_frame();
 	if(failures)
 	{
 		fprintf(stderr, "hci_filter_test: %d failure(s)\n", failures);
