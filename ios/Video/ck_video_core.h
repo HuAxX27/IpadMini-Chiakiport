@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// A3.2 and A3.3: the plain C half of CKVideoSink (contract C2,
+// A3.2 to A3.5: the plain C half of CKVideoSink (contract C2,
 // CKVideoSink.h). It takes what the core hands the sink, turns it into what a
 // hardware decoder wants with ck_h264.c (AVCC frames, and the SPS and PPS
 // apart), decides when the decoder must be made again and which frames go to
@@ -13,6 +13,11 @@
 // meanwhile make the core ask the console for one. The decoder sits behind
 // CKVideoDecoder: VideoToolbox in CKVideoSink.m, a fake in the Linux tests
 // (ios/tests/ck_video_tests.c).
+//
+// Pacing (A3.5): decode() shows the picture before it returns, so the time
+// between two decoded frames is how long the screen held a picture. Frames
+// are shown as soon as they arrive, with no buffer to even them out; the
+// counters say how often one came late.
 //
 // Every call takes the sink's lock, and the decoder's functions run inside
 // it, so they never overlap.
@@ -85,7 +90,18 @@ typedef struct ck_video_core_stats_t
 	uint32_t configure_failures;
 	/** Times decode() said the decoder broke. */
 	uint32_t decoder_broken;
+	/** Frames decoded more than CK_VIDEO_LATE_US after the frame before them. */
+	uint32_t frames_late;
+	/** The longest time between two decoded frames, in microseconds: the picture stood still that long. */
+	uint32_t interval_us_max;
 } CKVideoCoreStats;
+
+/**
+ * A frame later than this after the one before it is late: at 30 fps, one
+ * and a half frame times, so the screen held the previous picture for at
+ * least one refresh too many, a hitch one can see.
+ */
+#define CK_VIDEO_LATE_US 50000
 
 typedef struct ck_video_core_t CKVideoCore;
 

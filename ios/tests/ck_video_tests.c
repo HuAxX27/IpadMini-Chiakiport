@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 // Linux tests for the C half of CKVideoSink, ios/Video/ck_video_core.c
-// (A3.2 and A3.3), against a fake decoder that checks what it is given. Run
+// (A3.2 to A3.5), against a fake decoder that checks what it is given. Run
 // them with ./ios/tests/ck_h264_tests.sh, which also builds them for armv7
 // under qemu and has ffmpeg decode what the fake decoder received. Modes:
 //
@@ -585,6 +585,54 @@ static void test_reset_stops_waiting(void)
 	ck_video_core_free(core);
 }
 
+// --- Pacing (A3.5) ----------------------------------------------------------------
+
+static bool sample_at(CKVideoCore *core, Fake *fake, uint64_t at_us, const uint8_t *frame, size_t size)
+{
+	fake->clock_us = at_us;
+	return sample(core, frame, size);
+}
+
+static void test_pacing(void)
+{
+	Fake fake;
+	CKVideoCore *core = fake_core(&fake);
+	fake.script[5] = CK_VIDEO_DECODE_FAILED;
+	fake.script_count = 6;
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	// 30 frames a second, on time.
+	CHECK(sample_at(core, &fake, 0, IDR_FRAME, sizeof(IDR_FRAME)));
+	CHECK(sample_at(core, &fake, 33333, P_FRAME, sizeof(P_FRAME)));
+	CHECK(sample_at(core, &fake, 66667, P_FRAME, sizeof(P_FRAME)));
+	CKVideoCoreStats stats = stats_of(core);
+	CHECK(stats.frames_late == 0 && stats.interval_us_max == 33334);
+
+	// One 80 ms after the last is late; one at exactly the limit is not.
+	CHECK(sample_at(core, &fake, 146667, P_FRAME, sizeof(P_FRAME)));
+	CHECK(sample_at(core, &fake, 146667 + CK_VIDEO_LATE_US, P_FRAME, sizeof(P_FRAME)));
+	// A frame the decoder rejects shows nothing: the screen holds the picture
+	// before it until the next one.
+	CHECK(!sample_at(core, &fake, 230000, P_FRAME, sizeof(P_FRAME)));
+	CHECK(sample_at(core, &fake, 263334, P_FRAME, sizeof(P_FRAME)));
+	stats = stats_of(core);
+	CHECK(stats.frames_late == 2 && stats.interval_us_max == 80000 && stats.frames_failed == 1);
+
+	// The time counts from when decode() returns, as the picture shows then.
+	fake.decode_cost_us = 10000;
+	CHECK(sample_at(core, &fake, 296667, P_FRAME, sizeof(P_FRAME)));
+	CHECK(sample_at(core, &fake, 330000, P_FRAME, sizeof(P_FRAME)));
+	stats = stats_of(core);
+	CHECK(stats.frames_late == 0 && stats.interval_us_max == 43333);
+
+	// A new session starts without a frame before.
+	ck_video_core_reset(core);
+	CHECK(sample(core, PS5_HEADER, sizeof(PS5_HEADER)));
+	CHECK(sample_at(core, &fake, 5000000, IDR_FRAME, sizeof(IDR_FRAME)));
+	stats = stats_of(core);
+	CHECK(stats.frames_late == 0 && stats.interval_us_max == 0 && stats.frames_decoded == 1);
+	ck_video_core_free(core);
+}
+
 // Random and cut buffers after a real header: nothing may crash, and the decoder only gets well-formed AVCC.
 static void test_garbage(void)
 {
@@ -801,6 +849,7 @@ int main(int argc, char **argv)
 	test_new_parameters_wait_for_keyframe();
 	test_simulate();
 	test_reset_stops_waiting();
+	test_pacing();
 	test_garbage();
 	test_threads();
 

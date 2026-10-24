@@ -28,6 +28,9 @@ struct ck_video_core_t
 	uint32_t wait_refused;
 	/** CKVideoSimulation bits for the next frame. */
 	unsigned simulate;
+	/** When the last frame was decoded, if one was since the last reset. */
+	bool decoded_before;
+	uint64_t last_decoded_us;
 	CKVideoCoreStats stats;
 };
 
@@ -91,12 +94,36 @@ static CKH264Result convert(CKVideoCore *core, const uint8_t *buf, size_t buf_si
 	return ck_h264_annexb_to_avcc(buf, buf_size, CK_H264_DROP_FOR_VIDEOTOOLBOX, core->avcc, core->avcc_capacity, info);
 }
 
-static void count_decode(CKVideoCore *core, uint64_t start_us)
+static uint32_t clamp_us(uint64_t us)
 {
-	uint64_t us = core->decoder.now_us(core->decoder.user) - start_us;
+	return us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+}
+
+// Returns when decode() returned.
+static uint64_t count_decode(CKVideoCore *core, uint64_t start_us)
+{
+	uint64_t end_us = core->decoder.now_us(core->decoder.user);
+	uint64_t us = end_us - start_us;
 	core->stats.decode_us += us;
 	if(us > core->stats.decode_us_max)
-		core->stats.decode_us_max = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+		core->stats.decode_us_max = clamp_us(us);
+	return end_us;
+}
+
+// The picture is on its way to the screen when decode() returns: the time
+// since the previous one is how long the screen held that one.
+static void count_interval(CKVideoCore *core, uint64_t decoded_us)
+{
+	if(core->decoded_before)
+	{
+		uint64_t us = decoded_us - core->last_decoded_us;
+		if(us > CK_VIDEO_LATE_US)
+			core->stats.frames_late++;
+		if(us > core->stats.interval_us_max)
+			core->stats.interval_us_max = clamp_us(us);
+	}
+	core->decoded_before = true;
+	core->last_decoded_us = decoded_us;
 }
 
 // A frame the decoder can start from: an IDR, or one made only of I (or
@@ -143,7 +170,7 @@ static void keyframe_decoded(CKVideoCore *core)
 	uint64_t us = core->decoder.now_us(core->decoder.user) - core->wait_start_us;
 	core->stats.keyframe_waits++;
 	if(us > core->stats.keyframe_wait_us_max)
-		core->stats.keyframe_wait_us_max = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+		core->stats.keyframe_wait_us_max = clamp_us(us);
 }
 
 static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size, int32_t frames_lost)
@@ -202,6 +229,7 @@ static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size
 	}
 
 	CKVideoDecodeResult result;
+	uint64_t decoded_us = 0;
 	unsigned simulate = core->simulate;
 	core->simulate = 0;
 	if(simulate & CK_VIDEO_SIMULATE_BROKEN_DECODER)
@@ -212,12 +240,13 @@ static bool sample_locked(CKVideoCore *core, const uint8_t *buf, size_t buf_size
 	{
 		uint64_t start_us = core->decoder.now_us(core->decoder.user);
 		result = core->decoder.decode(core->decoder.user, core->avcc, info.avcc_size);
-		count_decode(core, start_us);
+		decoded_us = count_decode(core, start_us);
 	}
 	switch(result)
 	{
 		case CK_VIDEO_DECODE_OK:
 			core->stats.frames_decoded++;
+			count_interval(core, decoded_us);
 			if(keyframe)
 				keyframe_decoded(core);
 			return true;
@@ -255,6 +284,7 @@ void ck_video_core_reset(CKVideoCore *core)
 	ck_h264_param_store_reset(&core->params);
 	core->need_keyframe = false;
 	core->simulate = 0;
+	core->decoded_before = false;
 	pthread_mutex_unlock(&core->mutex);
 }
 
