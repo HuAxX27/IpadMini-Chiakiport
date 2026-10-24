@@ -137,3 +137,28 @@ add_executable(ck-video-info-tests video_info.c)
 target_compile_options(ck-video-info-tests PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ck-video-info-tests ck-consoles munit)
 add_test(NAME ck_video_info COMMAND ck-video-info-tests)
+
+# A6: the app's portable C (ios/UI).
+add_library(ck-ui STATIC "${CK_IOS_DIR}/UI/ck_console_rows.c" "${CK_IOS_DIR}/UI/ck_ui_regist.c"
+	"${CK_IOS_DIR}/UI/ck_ui_settings.c")
+target_include_directories(ck-ui PUBLIC "${CK_IOS_DIR}")
+target_link_libraries(ck-ui PUBLIC ck-consoles)
+target_compile_options(ck-ui PRIVATE -Wall -Wextra -Werror)
+
+# A6.1, A6.2: the console list's rows, from discovered consoles and saved registrations.
+add_executable(ck-ui-console-rows-tests ui_console_rows.c)
+target_compile_options(ck-ui-console-rows-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-ui-console-rows-tests ck-ui munit)
+add_test(NAME ck_ui_console_rows COMMAND ck-ui-console-rows-tests)
+
+# A6.4: the settings the screen offers and the file holds.
+add_executable(ck-ui-settings-tests ui_settings.c)
+target_compile_options(ck-ui-settings-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-ui-settings-tests ck-ui munit)
+add_test(NAME ck_ui_settings COMMAND ck-ui-settings-tests)
+
+# A6.3: the sentence for a registration's end and saving it on top of the registry file.
+add_executable(ck-ui-regist-tests ui_regist.c)
+target_compile_options(ck-ui-regist-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-ui-regist-tests ck-ui munit)
+add_test(NAME ck_ui_regist COMMAND ck-ui-regist-tests)

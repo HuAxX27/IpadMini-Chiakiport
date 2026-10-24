@@ -1,0 +1,9 @@
+Package: com.thehuax.chiakiport
+Name: Chiakiport
+Version: 0.4.0
+Architecture: iphoneos-arm
+Description: Cliente de PS Remote Play para el iPad mini 1: busca la PS5 en la red, la registra, la despierta y transmite el juego.
+Maintainer: TheHuAx
+Author: TheHuAx
+Section: Games
+Depends: firmware (>= 9.0)
