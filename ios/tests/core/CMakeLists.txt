@@ -109,6 +109,29 @@ endif()
 add_test(NAME ck_session COMMAND ck-session-tests)
 set_tests_properties(ck_session PROPERTIES RUN_SERIAL TRUE TIMEOUT 300)
 
+# A2.8: recording a session (Bridge/ck_recorder.h). recorder.c reads the Ogg pages back and decodes
+# them with libopus, whose paths the core's FindOpus left in the cache; check_recording.py plays the
+# files with ffmpeg, on the host like check_registry_plist.py.
+add_library(ck-recorder STATIC "${CK_IOS_DIR}/Bridge/ck_recorder.c")
+target_include_directories(ck-recorder PUBLIC "${CK_IOS_DIR}")
+target_link_libraries(ck-recorder PUBLIC chiaki-lib)
+target_compile_options(ck-recorder PRIVATE -Wall -Wextra -Werror)
+
+add_executable(ck-recorder-tests recorder.c)
+target_include_directories(ck-recorder-tests PRIVATE ${Opus_INCLUDE_DIRS})
+target_compile_options(ck-recorder-tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-recorder-tests ck-recorder munit ${Opus_LIBRARIES} m)
+add_test(NAME ck_recorder COMMAND ck-recorder-tests)
+
+add_executable(ck-recorder-tool recorder_tool.c)
+target_include_directories(ck-recorder-tool PRIVATE ${Opus_INCLUDE_DIRS})
+target_compile_options(ck-recorder-tool PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ck-recorder-tool ck-recorder ${Opus_LIBRARIES} m)
+add_test(NAME ck_recorder_ffmpeg
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_recording.py"
+		"${CK_IOS_DIR}/tests/data/x264_320x180.h264"
+		${CMAKE_CROSSCOMPILING_EMULATOR} "$<TARGET_FILE:ck-recorder-tool>")
+
 # A2.7: the video header the console sends before the frames (Bridge/ck_video_info.h).
 add_executable(ck-video-info-tests video_info.c)
 target_compile_options(ck-video-info-tests PRIVATE -Wall -Wextra -Werror)

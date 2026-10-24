@@ -1,7 +1,7 @@
 # ckctl (A2.4, A2.5) finds, registers and wakes the console from a shell on
-# the iPad; cksession (A2.6, A2.7) opens and closes a streaming session through
-# CKSession, the class the app uses, and says what video the console sent.
-# Both install to /usr/bin. See README.md.
+# the iPad; cksession (A2.6 to A2.8) opens and closes a streaming session
+# through CKSession, the class the app uses, says what video the console sent
+# and can record it. Both install to /usr/bin. See README.md.
 #
 #   make package FINALPACKAGE=1    # .deb in packages/
 #
@@ -20,10 +20,11 @@ CK_IOS_PREFIX ?= $(CK_ROOT)/build-ios-deps/prefix
 
 include $(THEOS)/makefiles/common.mk
 
-# ck_consoles.c, ck_registry.c, ck_session.c, ck_video_info.c and CKSession.m
-# live in ios/Bridge, where the app uses them too. Theos names each object and
-# its directory stamp after the source path it is given, so a ../ path would
-# leave build files outside .theos: each shared_*.c or .m includes one of them.
+# ck_consoles.c, ck_registry.c, ck_session.c, ck_video_info.c, ck_recorder.c
+# and CKSession.m live in ios/Bridge, where the app uses them too. Theos names
+# each object and its directory stamp after the source path it is given, so a
+# ../ path would leave build files outside .theos: each shared_*.c or .m
+# includes one of them.
 TOOL_NAME = ckctl cksession
 
 # The core's headers change layout with these two defines: they must match
@@ -44,7 +45,7 @@ ckctl_LDFLAGS = $(CK_LDFLAGS)
 ckctl_INSTALL_PATH = /usr/bin
 
 cksession_FILES = cksession.m shared_CKSession.m shared_ck_session.c shared_ck_video_info.c \
-	shared_ck_registry.c
+	shared_ck_recorder.c shared_ck_registry.c
 cksession_CFLAGS = -fobjc-arc $(CK_CFLAGS)
 cksession_FRAMEWORKS = Foundation
 cksession_LDFLAGS = $(CK_LDFLAGS)

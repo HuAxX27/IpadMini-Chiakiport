@@ -1,8 +1,8 @@
 Package: com.thehuax.ckctl
 Name: ckctl
-Version: 0.3.1
+Version: 0.3.2
 Architecture: iphoneos-arm
-Description: Herramientas de línea de comandos de Chiakiport para el iPad mini 1 por SSH: ckctl busca, registra y despierta la PS5; cksession abre y cierra sesiones con ella y dice qué video manda.
+Description: Herramientas de línea de comandos de Chiakiport para el iPad mini 1 por SSH: ckctl busca, registra y despierta la PS5; cksession abre y cierra sesiones con ella, dice qué video manda y las graba.
 Maintainer: TheHuAx
 Author: TheHuAx
 Section: Utilities
