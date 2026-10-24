@@ -1,6 +1,10 @@
 # Guía de pruebas en el iPad
 
-Para TheHuAx: cómo instalar lo que sale de cada PR, qué medir y cómo reportarlo. Es la actividad A0.5 (#8). Los detalles técnicos de la instalación están en [`ios/toolchain/README.md`](../../ios/toolchain/README.md#instalar-en-el-ipad), y el plan de pruebas completo, con las metas de cada punto de control, en [`qa/plan.md`](qa/plan.md).
+Para TheHuAx: cómo se instala lo que sale de cada PR, qué medir y cómo reportarlo. Es la actividad A0.5 (#8). Los detalles técnicos de la instalación están en [`ios/toolchain/README.md`](../../ios/toolchain/README.md#instalar-en-el-ipad), y el plan de pruebas completo, con las metas de cada punto de control, en [`qa/plan.md`](qa/plan.md).
+
+## Quién hace qué
+
+Todo lo que se hace en la laptop lo hace un agente, sin preguntarte, con una sesión de Remote Control: bajar el `.deb`, instalarlo en el iPad por SSH, correr los comandos y guardar lo que imprimen. A ti te toca lo físico: tener el iPad despierto, correr Carbon si se reinició, emparejar y usar el DualSense, mirar la pantalla y manejar la PS5. Después dices lo que viste. Los pasos de [Bajar el `.deb`](#1-bajar-el-deb) e [Instalar](#2-instalar) quedan aquí por si alguna vez quieres hacerlos tú.
 
 ## Antes de cada prueba
 
@@ -40,7 +44,7 @@ ssh ipad "cd /tmp && dpkg -r com.thehuax.ckhola && su mobile -c uicache"
 
 ## 3. Probar
 
-- **Cada PR que necesita tu prueba trae los pasos exactos** en su descripción, en la sección "En el iPad (TheHuAx)", con qué reportar. Sigue esos pasos; esta guía solo es lo común a todos.
+- **Cada PR que necesita tu prueba trae los pasos exactos** en su descripción, separados entre los que corre el agente en la laptop y los que haces tú, con qué reportar. Esta guía solo es lo común a todos.
 - **Puntos de control:** P1 a P5 tienen su lista de pruebas, sus metas y cuánto tiempo te piden en [`qa/plan.md`](qa/plan.md#nivel-3-en-el-ipad). Ya pasaron P1 y las pruebas de la PS5 de P2 (P2-1 a P2-4); el tono de audio (P2-5) y la app con datos simulados (P2-7) llegan con los hilos de audio e interfaz, y P2-6 no aplica mientras el puente esté en pausa.
 - **Prueba de humo**, desde P3, con cada `.deb` que cambie algo en el iPad (5 minutos): instalar, abrir, conectar, 2 minutos de juego, salir, volver a conectar y salir.
 
@@ -48,7 +52,7 @@ Qué medir:
 
 | Qué | Cómo |
 |---|---|
-| Lo que imprime cada comando | Copia la salida completa: `cksession` ya dice si transmitió, cuadros perdidos y memoria |
+| Lo que imprime cada comando | Lo guarda el agente desde la laptop: `cksession` ya dice si transmitió, cuadros perdidos y memoria |
 | Métricas de la app (fps, cuadros perdidos, memoria) | Las que muestre la app en pantalla, o el resumen por SSH cuando llegue A7.2 |
 | Latencia del botón a la pantalla | Con la cámara lenta a 240 fps del teléfono, como dice [`qa/plan.md`](qa/plan.md#latencia-con-cámara-lenta) |
 | Batería y calor | Porcentaje al empezar y al terminar; frío, tibio, caliente o incómodo |
@@ -56,7 +60,7 @@ Qué medir:
 
 ## 4. Reportar
 
-Pégalo en el hilo que te pidió la prueba, o en el chat del proyecto:
+La salida de los comandos la junta el agente. Tú cuenta lo que viste, en el hilo que te pidió la prueba o en el chat del proyecto. Si quieres el formato completo:
 
 ```
 Prueba: (ID, por ejemplo P3-1)   ·   .deb: (versión o número de PR)
