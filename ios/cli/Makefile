@@ -18,11 +18,12 @@ CK_IOS_PREFIX ?= $(CK_ROOT)/build-ios-deps/prefix
 
 include $(THEOS)/makefiles/common.mk
 
-# ck_consoles.c lives in ios/Bridge, where the app uses it too. Theos names
-# each object and its directory stamp after the source path it is given, so
-# a ../ path would leave build files outside .theos: shared_*.c includes it.
+# ck_consoles.c and ck_registry.c live in ios/Bridge, where the app uses them
+# too. Theos names each object and its directory stamp after the source path
+# it is given, so a ../ path would leave build files outside .theos: each
+# shared_*.c includes one of them.
 TOOL_NAME = ckctl
-ckctl_FILES = main.c ckctl.c shared_ck_consoles.c
+ckctl_FILES = main.c ckctl.c shared_ck_consoles.c shared_ck_registry.c
 # The core's headers change layout with these two defines: they must match
 # how core-check.sh built chiaki-lib.
 ckctl_CFLAGS = -std=c11 -Wall -Wextra -Werror -Wunguarded-availability \
