@@ -9,7 +9,7 @@ Del H.264 que entrega el core a la pantalla del iPad.
 | `ck_video_core.h`, `ck_video_core.c` | A3.2 y A3.3: la mitad en C del sumidero y su recuperación de errores, probadas en Linux contra un decodificador falso |
 | `CKVideoSink.m` | A3.2: el contrato C2 con VideoToolbox, sobre `ck_video_core.c` |
 | `ck_video_sink_stats.h` | Todo lo que cuenta el sumidero, más allá de C2, para CK Video y A7, y las fallas que se pueden simular (A3.3) |
-| `ckvideo/` | CK Video, el banco de pruebas del video en el iPad (no es la app) |
+| `ckvideo/` | CK Video, el banco de pruebas del video en el iPad, con una captura o con la PS5 en vivo (no es la app) |
 
 ## El sumidero (A3.2)
 
@@ -55,33 +55,41 @@ Para probarla sin perder paquetes de verdad, `ck_video_sink_simulate()` (en `ck_
 ### Para la pantalla de juego (A6.5)
 
 - Una vista a pantalla completa con `+layerClass` = `AVSampleBufferDisplayLayer`, `videoGravity = AVLayerVideoGravityResizeAspect` y fondo negro (como `ckvideo/CKVVideoView.m`). Su capa va a `ck_video_sink_new()`, que la retiene.
-- `[session setVideoSampleCallback:ck_video_sink_sample_cb user:sink]` antes de `-start:`.
+- `chiaki_lib_init()` una vez, antes de la primera sesión.
+- `[session setVideoSampleCallback:ck_video_sink_sample_cb user:sink]` antes de `-start:` (`ckvideo/CKVLiveSession.m` lo hace así).
 - `ck_video_sink_reset()` en el hilo principal antes de cada sesión, y `ck_video_sink_free()` solo después de que `-[CKSession stop]` regrese.
 - Compilar `CKVideoSink.m` (con ARC), `ck_video_core.c` y `ck_h264.c`, con los frameworks AVFoundation, CoreMedia, CoreVideo, VideoToolbox y QuartzCore, y `-DCHIAKI_LIB_ENABLE_MBEDTLS -DCHIAKI_DISABLE_HOLEPUNCH` por los headers del core.
 
 ## CK Video
 
-`ckvideo/` es el paquete `com.thehuax.ckvideo`: una app para probar el video en el iPad sin esperar a la app de A6. Reproduce una captura de A2.8 a 30 cuadros por segundo a través de `CKVideoSink`, el mismo sumidero que usará la app, en un hilo propio como el del core, y vuelve a empezar al terminar. Un panel encima del video dice cada segundo cuántos cuadros se decodificaron y mostraron, cuánto tardó decodificar (promedio y máximo), los fallidos y omitidos, la espera de cuadros clave y la memoria. Tocar el video oculta o muestra el panel.
+`ckvideo/` es el paquete `com.thehuax.ckvideo`: una app para probar el video en el iPad sin esperar a la app de A6. Muestra, a través de `CKVideoSink`, el mismo sumidero que usará la app, una de dos cosas:
 
-- **Simular pérdida** y **Simular decodificador roto** hacen fallar el siguiente cuadro (A3.3). Con una captura no hay core ni consola que pidan un IDR, así que el reproductor hace de consola: si el sumidero rechaza 8 cuadros seguidos, vuelve al principio de la captura, a su IDR, y lo cuenta en "keyframes enviados". Con la captura de la PS5, que tiene un solo IDR, la imagen vuelve al principio de la grabación. Una pérdida simulada tampoco tiene quien cambie la referencia de los cuadros siguientes, así que lo que haga VideoToolbox con ellos (error o bloques hasta el siguiente IDR) solo dice cómo reacciona a un cuadro faltante; con la PS5 en vivo (A3.4) el core sí la cambia.
+- **Reproducir la captura**: una captura de A2.8 a 30 cuadros por segundo, en un hilo propio como el del core, que vuelve a empezar al terminar. Busca la captura en `/var/mobile/Library/Chiakiport/captura.h264` y, si no está, en `/var/mobile/captura.h264`, donde la dejó la prueba de A2.8.
+- **Conectar a la PS5** (A3.4): una sesión de verdad con `CKSession` (contrato C1), la clase que usará la app, a 540p y 30 cuadros por segundo, con su video yendo al sumidero. Usa la primera consola registrada con `ckctl regist` en `/var/mobile/Library/Chiakiport/consoles.plist` y la última IP que guardó `ckctl`. Si la PS5 todavía tiene la sesión anterior y contesta que está ocupada, vuelve a pedirla cada 2 s, hasta 10 veces, como `cksession`. `CKVLiveSession.m` es el ejemplo de cómo conectar el sumidero a una sesión.
 
-- Busca la captura en `/var/mobile/Library/Chiakiport/captura.h264` y, si no está, en `/var/mobile/captura.h264`, donde la dejó la prueba de A2.8.
-- Lo que dicen el sumidero y la app queda en `/var/mobile/Library/Chiakiport/ckvideo.log` (uno por arranque), con una línea de cifras cada 10 s: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
-- La pantalla no se apaga mientras reproduce. Al salir de la app se detiene.
+Un panel encima del video dice cada segundo cuántos cuadros se decodificaron y mostraron, cuánto tardó decodificar (promedio y máximo), los fallidos y omitidos, la espera de cuadros clave y la memoria. Con la PS5 suma lo que cuenta `CKSession` (cuadros por segundo, kbps y cuadros perdidos en la red) y cuánto tardó el primer cuadro desde que se pidió la sesión. Tocar el video oculta o muestra el panel.
 
-### Prueba en el iPad (A3.2 y A3.3)
+- **Simular pérdida** y **Simular decodificador roto** hacen fallar el siguiente cuadro (A3.3). Con la PS5 en vivo es la prueba de verdad: el core cambia la referencia de los cuadros siguientes y pide el IDR, y su log lo dice ("Requesting IDR", "recovery complete"). Con una captura no hay core ni consola, así que el reproductor hace de consola: si el sumidero rechaza 8 cuadros seguidos, vuelve al principio de la captura, a su IDR, y lo cuenta en "keyframes enviados". Una pérdida simulada con la captura tampoco tiene quien cambie la referencia, así que lo que haga VideoToolbox con los cuadros siguientes (error o bloques hasta el siguiente IDR) solo dice cómo reacciona a un cuadro faltante.
+- Lo que dicen el sumidero, el core y la app queda en `/var/mobile/Library/Chiakiport/ckvideo.log` (uno por arranque), con una línea de cifras cada 10 s: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
+- La pantalla no se apaga mientras muestra video. **Detener**, o salir de la app, cierra la sesión con la PS5.
+
+### Prueba en el iPad (A3.2 a A3.4)
 
 En la laptop (lo hace una sesión de Remote Control, sin preguntar):
 
-1. Instalar el `.deb` del CI: `ios\toolchain\deploy.ps1 -Ip ipad -Path com.thehuax.ckvideo_0.2.0_iphoneos-arm.deb`, y revisar que la captura de A2.8 esté en el iPad (`ssh ipad ls -l /var/mobile/captura.h264`).
-2. Después de la prueba física, guardar el log: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
+1. Instalar el `.deb` de CK Video que arma el CI: `ios\toolchain\deploy.ps1 -Ip ipad -Path com.thehuax.ckvideo_<versión>_iphoneos-arm.deb`.
+2. Revisar que estén la captura de A2.8 y el registro de la PS5: `ssh ipad ls -l /var/mobile/captura.h264 /var/mobile/Library/Chiakiport/consoles.plist`.
+3. Despertar la PS5 y confirmar que está encendida: `ssh ipad ckctl wakeup -w 60`.
+4. Después de la prueba física, guardar el log: `ssh ipad cat /var/mobile/Library/Chiakiport/ckvideo.log`.
 
 En el iPad (TheHuAx):
 
 1. Abrir **CK Video** y tocar **Reproducir la captura**. Reportar si se ve la pantalla de la PS5 completa, sin bloques ni colores raros, con barras negras arriba y abajo, y si se mueve con fluidez.
-2. Pasados unos 10 s, tocar **Simular decodificador roto**. Lo esperado: la imagen se queda quieta un instante (unos 0,3 s) y vuelve desde el principio de la grabación, sin bloques verdes ni grises. Reportar si fue así.
-3. Pasados otros 10 s, tocar **Simular pérdida**. Reportar qué se ve en los segundos siguientes (nada, bloques que se arrastran, o un salto al principio).
-4. Reportar las cifras del panel al final: decodificados por segundo, ms de decodificación, fallidos, rotos, esperando keyframe, la espera más larga, keyframes enviados y memoria. El log tiene lo mismo.
+2. Pasados unos 10 s, tocar **Simular decodificador roto**. Lo esperado: la imagen se queda quieta un instante (unos 0,3 s) y vuelve desde el principio de la grabación, sin bloques verdes ni grises.
+3. Pasados otros 10 s, tocar **Simular pérdida** y contar qué se ve en los segundos siguientes (nada, bloques que se arrastran, o un salto al principio).
+4. Tocar **Conectar a la PS5**. Lo esperado: en unos segundos aparece la pantalla de inicio de la PS5, en vivo (P3). Mover algo en la PS5 con su control para ver que la imagen sigue.
+5. Con la PS5 en pantalla, tocar **Simular decodificador roto** y luego **Simular pérdida**. Lo esperado: con el roto, la imagen se queda quieta menos de un segundo y vuelve donde está la PS5; con la pérdida, nada o un parpadeo.
+6. Reportar qué se vio en cada paso y las cifras del panel al final (una foto basta).
 
 ## Pruebas
 

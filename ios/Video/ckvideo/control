@@ -1,8 +1,8 @@
 Package: com.thehuax.ckvideo
 Name: CK Video
-Version: 0.2.0
+Version: 0.3.0
 Architecture: iphoneos-arm
-Description: Banco de pruebas del video de Chiakiport para el iPad mini 1: reproduce una captura de la PS5 con el decodificador por hardware y muestra cuántos cuadros decodifica y cuánto tarda.
+Description: Banco de pruebas del video de Chiakiport para el iPad mini 1: muestra una captura o la PS5 en vivo con el decodificador por hardware, y cuántos cuadros decodifica y cuánto tarda.
 Maintainer: TheHuAx
 Author: TheHuAx
 Section: Utilities

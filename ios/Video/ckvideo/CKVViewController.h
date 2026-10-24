@@ -3,8 +3,9 @@
 #import <UIKit/UIKit.h>
 
 /**
- * The whole screen is the video; a panel on top shows what the sink counts
- * every second and has the buttons. Tapping the video hides or shows it.
+ * The whole screen is the video, from a capture or from the PS5 live; a panel
+ * on top shows what the sink counts every second and has the buttons. Tapping
+ * the video hides or shows it.
  */
 @interface CKVViewController : UIViewController
 
