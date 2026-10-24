@@ -75,7 +75,7 @@ Si algo se ve mal, un video corto con el teléfono vale más que una descripció
 
 | Qué pasa | Por qué suele ser | Qué hacer |
 |---|---|---|
-| SSH tarda y falla (`timed out`) | El iPad está dormido o bloqueado, se reinició sin Carbon, o cambió de IP | Desbloquéalo, corre Carbon si se reinició, y revisa la IP en Ajustes > Wi-Fi |
+| SSH tarda y falla (`timed out`) | El iPad está dormido o bloqueado, se reinició sin Carbon, o cambió de IP | Desbloquéalo, corre Carbon si se reinició, y revisa la IP en Ajustes > Wi-Fi. Justo después de reiniciar, SSH falla (`timed out during banner exchange`) hasta que el Wi-Fi se reconecta: espera un minuto |
 | `ckctl discover` no ve la PS5 | La PS5 está apagada del todo (no en reposo), en otra red, o sin Remote Play | Revisa los pasos de [Antes de cada prueba](#antes-de-cada-prueba) |
 | `la consola sigue ocupada` | La PS5 rechaza una sesión nueva unos 8 segundos después de cerrar otra | Nada: `cksession` vuelve a intentar solo |
 | Una app se cierra al abrirla | La firma, o un error al arrancar | Ábrela por SSH, por ejemplo `ssh ipad /Applications/CKHola.app/CKHola`, y reporta lo que imprima (`Killed: 9` apunta a la firma) |
