@@ -100,6 +100,11 @@ bool ck_ds5_source_poll(void *user, ChiakiControllerState *state)
 	return true;
 }
 
+bool ck_ds5_source_connected(const CKDS5Source *source)
+{
+	return atomic_load_explicit(&source->connected, memory_order_relaxed);
+}
+
 CKInputSource ck_ds5_source_input(CKDS5Source *source)
 {
 	CKInputSource input = { CK_DS5_SOURCE_NAME, source, ck_ds5_source_poll };
