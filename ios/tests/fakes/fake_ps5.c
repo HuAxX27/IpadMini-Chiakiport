@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 // The fake PS5 of fake_ps5.h: one thread, three sockets on 127.0.0.1.
+// TCP 9295 takes the registration and the session request alike, one
+// connection at a time, as a PS5 does on that port.
 
 #include "fake_ps5.h"
 
@@ -33,7 +35,8 @@ void fake_ps5_init(FakePs5 *ps5)
 	memcpy(ps5->psn_account_id, account, sizeof(account));
 	ps5->state = CHIAKI_DISCOVERY_HOST_STATE_STANDBY;
 	ps5->regist_mode = FAKE_PS5_REGIST_OK;
-	ps5->udp_discovery = ps5->udp_regist = ps5->tcp_regist = -1;
+	ps5->session_mode = FAKE_PS5_SESSION_NONCE;
+	ps5->udp_discovery = ps5->udp_regist = ps5->tcp_regist = ps5->held_fd = -1;
 	ps5->stop_pipe[0] = ps5->stop_pipe[1] = -1;
 }
 
@@ -138,7 +141,10 @@ static void send_refusal(int fd, int code, const char *reason)
 	send_all(fd, head, (size_t)len);
 }
 
-/** Reads the request into buf: header, then Content-Length bytes. Returns the payload or NULL. */
+/**
+ * Reads the request into buf: the header, NUL-terminated, then Content-Length
+ * bytes. Returns the payload (maybe empty) or NULL.
+ */
 static uint8_t *read_request(int fd, char *buf, size_t buf_size, size_t *payload_size)
 {
 	size_t filled = 0;
@@ -168,12 +174,8 @@ static uint8_t *read_request(int fd, char *buf, size_t buf_size, size_t *payload
 		if(!end)
 			continue;
 		*end = '\0';
-		if(!strstr(buf, "POST /sie/ps5/rp/sess/rgst "))
-			return NULL;
 		const char *length = strstr(buf, "Content-Length: ");
-		if(!length)
-			return NULL;
-		content = strtoul(length + strlen("Content-Length: "), NULL, 10);
+		content = length ? strtoul(length + strlen("Content-Length: "), NULL, 10) : 0;
 		body = end + 4;
 		if(content > buf_size - (size_t)(body - buf))
 			return NULL;
@@ -212,14 +214,8 @@ static bool ambassador_from_aeropause(size_t key_1_off, const uint8_t *aeropause
 	return true;
 }
 
-static void regist_request(FakePs5 *ps5, int fd)
+static void regist_request(FakePs5 *ps5, int fd, uint8_t *payload, size_t size)
 {
-	struct timeval tv = { 2, 0 };
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-	char buf[2048];
-	size_t size = 0;
-	uint8_t *payload = read_request(fd, buf, sizeof(buf), &size);
 	pthread_mutex_lock(&ps5->mutex);
 	ps5->regist_requests++;
 	FakePs5RegistMode mode = ps5->regist_mode;
@@ -312,6 +308,86 @@ static void regist_request(FakePs5 *ps5, int fd)
 	send_all(fd, body, (size_t)body_len);
 }
 
+/** The value of header key in the NUL-terminated header, into out. */
+static void header_value(const char *head, const char *key, char *out, size_t out_size)
+{
+	out[0] = '\0';
+	const char *p = strstr(head, key);
+	if(!p)
+		return;
+	p += strlen(key);
+	size_t len = strcspn(p, "\r\n");
+	if(len >= out_size)
+		len = out_size - 1;
+	memcpy(out, p, len);
+	out[len] = '\0';
+}
+
+/** GET /sie/ps5/rp/sess/init. Returns whether fd is kept open (HANG). */
+static bool session_request(FakePs5 *ps5, int fd, const char *head)
+{
+	pthread_mutex_lock(&ps5->mutex);
+	ps5->session_requests++;
+	header_value(head, "RP-Registkey: ", ps5->last_session_regist_key, sizeof(ps5->last_session_regist_key));
+	FakePs5SessionMode mode = ps5->session_mode;
+	pthread_mutex_unlock(&ps5->mutex);
+	switch(mode)
+	{
+		case FAKE_PS5_SESSION_NONCE:
+		{
+			// Any 16 bytes: the session only decodes it before the ctrl request.
+			static const char answer[] = "HTTP/1.1 200 OK\r\n"
+				"RP-Nonce: 8PDw8PDw8PDw8PDw8PDw8A==\r\n"
+				"Content-Length: 0\r\n\r\n";
+			send_all(fd, answer, sizeof(answer) - 1);
+			return false;
+		}
+		case FAKE_PS5_SESSION_IN_USE:
+			send_refusal(fd, 403, "80108b10");
+			return false;
+		case FAKE_PS5_SESSION_HANG:
+			return true;
+		case FAKE_PS5_SESSION_CLOSE:
+		default:
+			return false;
+	}
+}
+
+/** One connection on TCP 9295: a registration, a session request or a ctrl request. */
+static void tcp_request(FakePs5 *ps5, int fd)
+{
+	struct timeval tv = { 2, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	char buf[2048];
+	size_t size = 0;
+	uint8_t *payload = read_request(fd, buf, sizeof(buf), &size);
+	if(payload && !strncmp(buf, "POST /sie/ps5/rp/sess/rgst ", strlen("POST /sie/ps5/rp/sess/rgst ")))
+		regist_request(ps5, fd, payload, size);
+	else if(payload && !strncmp(buf, "GET /sie/ps5/rp/sess/init ", strlen("GET /sie/ps5/rp/sess/init ")))
+	{
+		if(session_request(ps5, fd, buf))
+		{
+			ps5->held_fd = fd;
+			return;
+		}
+	}
+	else if(payload && !strncmp(buf, "GET /sie/ps5/rp/sess/ctrl ", strlen("GET /sie/ps5/rp/sess/ctrl ")))
+	{
+		pthread_mutex_lock(&ps5->mutex);
+		ps5->ctrl_requests++;
+		pthread_mutex_unlock(&ps5->mutex);
+		send_refusal(fd, 403, NULL);
+	}
+	else
+	{
+		// A registration that did not arrive whole still counts, as before.
+		pthread_mutex_lock(&ps5->mutex);
+		ps5->regist_requests++;
+		pthread_mutex_unlock(&ps5->mutex);
+	}
+	close(fd);
+}
+
 static void *fake_ps5_thread(void *user)
 {
 	FakePs5 *ps5 = user;
@@ -347,8 +423,10 @@ static void *fake_ps5_thread(void *user)
 			int fd = accept(ps5->tcp_regist, NULL, NULL);
 			if(fd >= 0)
 			{
-				regist_request(ps5, fd);
-				close(fd);
+				if(ps5->held_fd >= 0)
+					close(ps5->held_fd);
+				ps5->held_fd = -1;
+				tcp_request(ps5, fd);
 			}
 		}
 	}
@@ -367,6 +445,7 @@ static void close_all(FakePs5 *ps5)
 	close_fd(&ps5->udp_discovery);
 	close_fd(&ps5->udp_regist);
 	close_fd(&ps5->tcp_regist);
+	close_fd(&ps5->held_fd);
 	close_fd(&ps5->stop_pipe[0]);
 	close_fd(&ps5->stop_pipe[1]);
 }
@@ -413,6 +492,22 @@ ChiakiDiscoveryHostState fake_ps5_state(FakePs5 *ps5)
 	ChiakiDiscoveryHostState state = ps5->state;
 	pthread_mutex_unlock(&ps5->mutex);
 	return state;
+}
+
+int fake_ps5_session_requests(FakePs5 *ps5)
+{
+	pthread_mutex_lock(&ps5->mutex);
+	int n = ps5->session_requests;
+	pthread_mutex_unlock(&ps5->mutex);
+	return n;
+}
+
+int fake_ps5_ctrl_requests(FakePs5 *ps5)
+{
+	pthread_mutex_lock(&ps5->mutex);
+	int n = ps5->ctrl_requests;
+	pthread_mutex_unlock(&ps5->mutex);
+	return n;
 }
 
 int fake_ps5_wakeups(FakePs5 *ps5)

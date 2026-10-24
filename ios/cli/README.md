@@ -1,6 +1,6 @@
-# ckctl (A2.4, A2.5)
+# ckctl y cksession (A2.4 a A2.6)
 
-Herramienta de línea de comandos para buscar, registrar y despertar la PS5 desde el iPad, por SSH. Es la prueba del hito espolón (P2): que la PS5 se encienda desde el iPad. Dueño: A2.
+Herramientas de línea de comandos para el iPad, por SSH. `ckctl` busca, registra y despierta la PS5: es la prueba del hito espolón (P2), que la PS5 se encienda desde el iPad. `cksession` abre y cierra sesiones de streaming con ella a través de `CKSession`, la clase que usará la app. Dueño: A2.
 
 `ckctl` es la cara de línea de comandos de `ios/Bridge/CKConsoles.h`, la misma API que usarán la lista de consolas (A6.2) y el registro (A6.3) de la app, y guarda los registros con `ios/Bridge/ck_registry.h` en el plist de C5, el mismo archivo que leerá la app. Todo es C portable y está probado en Linux contra una PS5 falsa (ver [Pruebas](#pruebas)).
 
@@ -8,8 +8,9 @@ Herramienta de línea de comandos para buscar, registrar y despertar la PS5 desd
 |---|---|
 | `ckctl.h`, `ckctl.c` | Los comandos, en `ckctl_main()`, que las pruebas llaman igual que `main.c` |
 | `main.c` | Inicia el core y llama a `ckctl_main()` |
-| `shared_ck_consoles.c`, `shared_ck_registry.c` | Compilan `ios/Bridge/ck_consoles.c` y `ios/Bridge/ck_registry.c` dentro de `ckctl` (el `Makefile` dice por qué) |
-| `Makefile`, `control` | El paquete de Theos `com.thehuax.ckctl`, que instala `/usr/bin/ckctl` |
+| `cksession.m` | `cksession`, en Objective-C sobre `CKSession` |
+| `shared_*.c`, `shared_CKSession.m` | Compilan dentro de las herramientas el código de `ios/Bridge/` que también usa la app (el `Makefile` dice por qué) |
+| `Makefile`, `control` | El paquete de Theos `com.thehuax.ckctl`, que instala `/usr/bin/ckctl` y `/usr/bin/cksession` |
 
 ## Uso
 
@@ -55,6 +56,22 @@ El core solo dice si el registro funcionó o no. `ck_regist` lee la línea de er
 | `CK_REGIST_UNREACHABLE` | La consola rechazó la conexión o no hay ruta | Revisar la red |
 | `CK_REGIST_NO_REPLY`, `CK_REGIST_BAD_REPLY` | La consola no contestó, o contestó sin las llaves | Repetir; si sigue, reportar con `-v` |
 
+## cksession
+
+```sh
+cksession                       # una sesión de 10 s con la consola registrada
+cksession -n 20 -t 5            # abre y cierra 20 veces, 5 s cada una
+cksession -c Sala -r 720 -f 60  # otra consola, 720p a 60 cuadros por segundo
+```
+
+Usa el registro guardado como `ckctl wakeup`: sin `-c`, la única consola registrada, en la última IP que guardó `ckctl` (o en `-H`). La consola tiene que estar encendida: `ckctl wakeup -w 60` primero. Pide H.264 a 540p y 30 cuadros por segundo salvo que `-r`, `-f` o `-b` digan otra cosa.
+
+Imprime cada cambio de estado (`conectando`, `transmitiendo`, `detenida`), la razón con la que terminó cada sesión, las métricas de cada segundo (cuadros, kbps, cuadros perdidos, memoria) y la memoria residente después de cerrar cada ronda. Si la memoria crece ronda tras ronda, hay una fuga. Termina con 0 si todas las rondas llegaron a transmitir. `CK_LOG_VERBOSE=1 cksession ...` muestra todo lo que dice el core.
+
+Después de cerrar una sesión, la PS5 tarda unos segundos en soltarla: mientras tanto contesta que Remote Play ya está en uso (`0x80108b10`). En la primera prueba en el iPad tardó entre 6 y 9 s. Por eso, si una ronda recibe esa respuesta, `cksession` vuelve a pedir la sesión cada 2 s, hasta 10 veces, y dice cuántos segundos después de cerrar la anterior la aceptó.
+
+Por ahora no muestra el video ni toca el audio: los cuenta. La pantalla y el sonido llegan con la app (A3, A4 y A6).
+
 ## Compilar
 
 El CI lo empaqueta en cada PR con los demás proyectos de Theos (`ios/toolchain/ci-ipad.sh`) y lo deja en el artefacto `ipad-debs` como `com.thehuax.ckctl_<versión>_iphoneos-arm.deb`. A mano, después de `ci-ipad.sh` o de `build-deps.sh` y `core-check.sh`:
@@ -76,6 +93,14 @@ El `Makefile` enlaza el core de `build-ios-core/` y mbedTLS y Opus de `build-ios
 
 Reporta lo que imprimió cada paso (sin el Account ID ni el PIN) y, si algo falla, repite ese paso con `-v`.
 
+## Probar la sesión en el iPad (A2.6)
+
+1. Con la PS5 registrada (pasos de arriba) y encendida: `ckctl wakeup -w 60`.
+2. `cksession -t 10`. Debe pasar por `conectando` y `transmitiendo`, imprimir unos 30 cuadros por segundo durante 10 s y terminar con `detenida`.
+3. `cksession -n 20 -t 5`. Debe decir `Transmitió en 20 de 20 rondas.`, y la memoria después de cada ronda debe quedarse más o menos igual.
+
+Reporta la salida de los dos comandos. Si una ronda no llega a `transmitiendo`, repite con `CK_LOG_VERBOSE=1 cksession -t 10` y guarda la salida.
+
 ## Pruebas
 
 ```sh
@@ -83,5 +108,7 @@ Reporta lo que imprimió cada paso (sin el Account ID ni el PIN) y, si algo fall
 ```
 
 `ck_consoles` (`ios/tests/core/consoles.c`) corre la API y los comandos de `ckctl` contra la PS5 falsa de `ios/tests/fakes/fake_ps5.c`, en 127.0.0.1, con OpenSSL, con mbedTLS y en armv7 bajo `qemu-arm`. La falsa contesta la búsqueda y la señal de despertar como una PS5, y el registro con el mismo cifrado del core: descifra la petición con el PIN, revisa el Account ID y responde con llaves inventadas. Cubre el registro que funciona, cada error de la tabla de arriba, cancelar un registro, despertar con la llave correcta y con otra, y la lista de consolas que cambia cuando una se enciende o deja de contestar. Con el registro guardado: que `regist` lo guarde o, si no puede, imprima las llaves sin tocar el archivo; que `wakeup` despierte sin llave, elija entre varias consolas y encuentre a una que cambió de IP; `discover`, `list` y `forget`.
+
+`ck_session` (`ios/tests/core/session.c`) prueba `ios/Bridge/ck_session.c`, la mitad en C de `CKSession`, contra la misma PS5 falsa, que contesta la petición de sesión como una PS5 (la acepta, dice que Remote Play está en uso, no contesta o cuelga) pero no transmite. Cubre cada forma de terminar, detener mientras conecta, volver a arrancar la misma sesión, el hilo de entrada que lee los controles a 125 Hz, y abrir y cerrar 20 veces sin que crezcan los sockets, los hilos ni la memoria. Con ASan y `--no-fork`, LeakSanitizer revisa además que no quede memoria sin liberar.
 
 `ck_registry` (`ios/tests/core/registry.c`) prueba el plist en disco: ida y vuelta, carpetas que no existen, permisos `0600`, un plist como los que escribe Foundation (con llaves de la app, comentarios y datos en varias líneas) y 25 archivos dañados que debe rechazar. `ck_registry_plistlib` (`check_registry_plist.py`) cruza el formato con `plistlib` de Python: lee lo que escribe `ck_registry`, le da a `ck_registry` lo que escribe `plistlib` y revisa que rechace un plist binario.
