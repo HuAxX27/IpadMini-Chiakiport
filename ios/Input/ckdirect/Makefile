@@ -7,7 +7,8 @@
 #                report, and logs the Bluetooth traffic it sees to
 #                /tmp/ckbtfilter.log.
 #   ckhidprobe   command-line tool: reads the DualSense with IOHIDManager, from
-#                the shared reports (-s), or through CKDS5Source like the app (-c).
+#                the shared reports (-s), or through CKDS5Source like the app
+#                (-c), optionally through the default pad map (-c -m, A5.4).
 #
 #   make package FINALPACKAGE=1    # .deb in packages/
 TARGET := iphone:clang:9.3:9.0
