@@ -11,10 +11,12 @@
 //   ckhidprobe -r     # first list the HID and Bluetooth services in the IORegistry
 //   ckhidprobe -s     # read the reports ckbtfilter shares instead (see ck_ds5_shared.h)
 //   ckhidprobe -c     # read the pad through CKDS5Source, as the app does (A5.8)
+//   ckhidprobe -c -m  # the same through the default pad map (A5.4): dead zones applied
 
 #include "ck_ds5_shared.h"
 #include "ck_ds5_source.h"
 #include "ck_iohid.h"
+#include "ck_pad_map.h"
 #include "ds5_print.h"
 
 #include <errno.h>
@@ -342,12 +344,22 @@ static uint64_t now_us(void)
 
 // -c: the input source the app hands CKSession (contract C4), polled every
 // CK_INPUT_POLL_INTERVAL_MS like CKSession does. Prints the state when it
-// changes and, every 5 s, what the polls cost.
-static int follow_source(void)
+// changes and, every 5 s, what the polls cost. With -m, through the default
+// pad map, as the app hands it over.
+static int follow_source(bool mapped)
 {
 	static CKDS5Source source;
+	static CKPadMapSource map_source;
 	ck_ds5_source_init(&source, CK_DS5_SHARED_PATH);
 	CKInputSource input = ck_ds5_source_input(&source);
+	if(mapped)
+	{
+		CKPadMap map;
+		ck_pad_map_set_default(&map);
+		input = ck_pad_map_source_input(&map_source, input, &map);
+		printf("Default pad map: stick dead zone %d of 32767, trigger dead zone %d of 255.\n",
+			map.left_deadzone, map.l2_deadzone);
+	}
 	printf("Polling the \"%s\" input source every %d ms, like the app. Press buttons, move the sticks, touch the "
 		"touchpad; Ctrl-C to quit.\n", input.name, CK_INPUT_POLL_INTERVAL_MS);
 	fflush(stdout);
@@ -421,7 +433,7 @@ static void waiting_hint(CFRunLoopTimerRef timer, void *info)
 
 int main(int argc, char **argv)
 {
-	bool registry = false, from_shared = false, from_source = false;
+	bool registry = false, from_shared = false, from_source = false, mapped = false;
 	for(int i = 1; i < argc; i++)
 	{
 		if(strcmp(argv[i], "-x") == 0)
@@ -432,11 +444,13 @@ int main(int argc, char **argv)
 			from_shared = true;
 		else if(strcmp(argv[i], "-c") == 0)
 			from_source = true;
+		else if(strcmp(argv[i], "-m") == 0)
+			mapped = true;
 	}
 	if(registry)
 		list_registry();
 	if(from_source)
-		return follow_source();
+		return follow_source(mapped);
 	if(from_shared)
 		return follow_shared();
 

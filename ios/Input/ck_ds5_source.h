@@ -17,6 +17,7 @@
 #include "ck_ds5.h"
 #include "ck_ds5_shared.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -37,8 +38,11 @@ typedef struct ck_ds5_source_t
 	uint64_t dev, ino;
 	unsigned polls_to_check;
 	uint32_t seq;
-	/** A pad sent a report it understood, and has not gone since. */
-	bool connected;
+	/**
+	 * A pad sent a report it understood, and has not gone since. Written by
+	 * the poll; other threads read it with ck_ds5_source_connected().
+	 */
+	_Atomic bool connected;
 	ChiakiControllerState state;
 	uint8_t report[CK_DS5_SHARED_REPORT_MAX];
 	/** The newest report's kind, and the reports parsed since init by kind. For the probe and the logs. */
@@ -60,6 +64,13 @@ void ck_ds5_source_fini(CKDS5Source *source);
  * Between reports it returns the last state, so a held button stays held.
  */
 bool ck_ds5_source_poll(void *user, ChiakiControllerState *state);
+
+/**
+ * Whether a pad is connected, as of the last poll. Safe from any thread, for
+ * example to hide the touch controls on the main thread while the DualSense
+ * reports.
+ */
+bool ck_ds5_source_connected(const CKDS5Source *source);
 
 /** The source as CKSession takes it. */
 CKInputSource ck_ds5_source_input(CKDS5Source *source);
