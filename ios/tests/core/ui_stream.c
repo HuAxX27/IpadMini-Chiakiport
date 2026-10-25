@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 // A6.5: what the game screen says and decides (UI/ck_ui_stream.h).
-// CKStreamViewController.m asks ck_ui_session_should_retry() after every end
-// before any video, and shows ck_ui_quit_reason_string() and
-// ck_ui_metrics_line() as they come.
+// CKStreamViewController.m asks ck_ui_session_should_retry() after every end,
+// and shows ck_ui_quit_reason_string() and ck_ui_metrics_line() as they come.
 
 #include <munit.h>
 
@@ -17,19 +16,33 @@ static MunitResult test_retry(const MunitParameter params[], void *user)
 {
 	(void)params;
 	(void)user;
+	const ChiakiQuitReason in_use = CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE;
+	const ChiakiQuitReason ctrl = CHIAKI_QUIT_REASON_CTRL_CONNECT_FAILED;
 	// "Remote is already in use" right after the previous session: ask again, up to the limit.
 	for(unsigned retries = 0; retries < CK_UI_SESSION_RETRY_MAX; retries++)
-		munit_assert_true(ck_ui_session_should_retry(CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE, false, retries));
-	munit_assert_false(ck_ui_session_should_retry(CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE, false,
-		CK_UI_SESSION_RETRY_MAX));
-	// After video came, in use means something else took the console: no retry.
-	munit_assert_false(ck_ui_session_should_retry(CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE, true, 0));
+		munit_assert_true(ck_ui_session_should_retry(in_use, false, retries, -1));
+	munit_assert_false(ck_ui_session_should_retry(in_use, false, CK_UI_SESSION_RETRY_MAX, 3));
+	// After video came, the session ended for real: no retry.
+	munit_assert_false(ck_ui_session_should_retry(in_use, true, 0, 3));
+	munit_assert_false(ck_ui_session_should_retry(ctrl, true, 0, 3));
+
+	// A failed control connection is the console still closing only right after a session, or mid-retries.
+	munit_assert_true(ck_ui_session_should_retry(ctrl, false, 0, 0));
+	munit_assert_true(ck_ui_session_should_retry(ctrl, false, 0, CK_UI_SESSION_BUSY_SECONDS - 1));
+	munit_assert_false(ck_ui_session_should_retry(ctrl, false, 0, CK_UI_SESSION_BUSY_SECONDS));
+	munit_assert_false(ck_ui_session_should_retry(ctrl, false, 0, -1));
+	munit_assert_true(ck_ui_session_should_retry(ctrl, false, 1, -1));
+	munit_assert_false(ck_ui_session_should_retry(ctrl, false, CK_UI_SESSION_RETRY_MAX, 1));
+
 	// Every other end is shown, not retried.
 	for(int reason = CHIAKI_QUIT_REASON_NONE; reason <= CHIAKI_QUIT_REASON_STREAM_CONNECTION_TRANSPORT_FAILED; reason++)
-		if(reason != CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE)
-			munit_assert_false(ck_ui_session_should_retry((ChiakiQuitReason)reason, false, 0));
-	// The whole wait covers the PS5's cooldown, 4 to 8 s, with room to spare.
-	munit_assert_int(CK_UI_SESSION_RETRY_SECONDS * CK_UI_SESSION_RETRY_MAX, >=, 16);
+		if(reason != (int)in_use && reason != (int)ctrl)
+		{
+			munit_assert_false(ck_ui_session_should_retry((ChiakiQuitReason)reason, false, 0, 1));
+			munit_assert_false(ck_ui_session_should_retry((ChiakiQuitReason)reason, false, 3, 1));
+		}
+	// The whole wait covers the PS5's 10 to 20 s, with room to spare.
+	munit_assert_int(CK_UI_SESSION_RETRY_SECONDS * CK_UI_SESSION_RETRY_MAX, >=, 30);
 	return MUNIT_OK;
 }
 

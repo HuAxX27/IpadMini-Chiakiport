@@ -50,7 +50,7 @@ Toda la app va en horizontal, hacia cualquiera de los dos lados.
 `CKStreamViewController` abre la sesión de `CKSession` (C1) con el registro guardado, la IP donde contestó la consola y los ajustes de la app.
 
 - **Control.** El DualSense conectado directo al iPad (`CKDS5Source`, A5.8) con el mapeo por defecto (`ck_pad_map.h`, A5.4). Si la sesión está abierta y no hay pad, la pantalla lo dice. Los controles táctiles (A5.5) se agregan cuando lleguen a `main`.
-- **"Ya está en uso".** Justo después de cerrar una sesión, la PS5 rechaza otra unos 4 a 8 s. Si eso pasa antes de que llegue la sesión, la pantalla lo vuelve a pedir cada 2 s, hasta 10 veces, y lo dice.
+- **"Ya está en uso".** Justo después de cerrar una sesión, la PS5 rechaza otra durante 10 a 20 s: a veces primero no acepta la conexión de control y luego dice que ya está en uso. Si eso pasa antes de que llegue la sesión, la pantalla la vuelve a pedir cada 2 s, hasta 15 veces (unos 30 s), y lo dice. Una conexión de control que falla sin una sesión reciente (30 s) es un error de verdad y se muestra enseguida.
 - **Cuando termina**, dice por qué en español (`ck_ui_quit_reason_string()`), con el detalle del core debajo, y ofrece *Volver a intentar* o *Volver a la lista*. Al mandar la app al fondo cierra la sesión: iOS la detendría a los pocos segundos.
 - **Métricas**, desde el menú: una línea arriba con cuadros por segundo, tiempo de decodificación, bitrate, cuadros perdidos, audio y memoria, cada segundo.
 - **Video y audio** se conectan aquí cuando lleguen los de A3 (`CKVideoSink`, C2) y A4 (el reproductor, C3). Mientras, la pantalla queda negra y la imagen se ve en la tele.
@@ -137,7 +137,7 @@ Con la PS5 registrada, `com.thehuax.ckdirect` instalado y el DualSense conectado
 1. Con la PS5 encendida, toca **Jugar**: "Conectando con…" y en 2 o 3 s se quita el texto. La PS5 muestra que se conectó un dispositivo de Remote Play.
 2. Mueve los sticks y aprieta botones: la PS5 responde en la tele. Apaga el DualSense (mantén PS 10 s): en un segundo la pantalla dice que no ve el DualSense; enciéndelo y se quita.
 3. Toca con tres dedos y elige **Mostrar métricas**: arriba sale una línea que cambia cada segundo, con unos 30 fps.
-4. **Salir** y, enseguida, **Jugar** otra vez: debe decir que la consola está cerrando la sesión anterior, probar de nuevo y conectar en unos 8 s.
+4. **Salir** y, enseguida, **Jugar** otra vez: debe decir que la consola está cerrando la sesión anterior, probar de nuevo y conectar en 10 a 20 s.
 5. Pon la PS5 en reposo desde su menú: la pantalla dice que la consola se apagó o entró en reposo, con *Volver a intentar* y *Volver a la lista*.
 
 Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
@@ -147,6 +147,6 @@ Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
 Las pruebas de la app son las `ui_*.c` de `ios/tests/core/`: `ios/tests/core/run.sh` las compila con el mismo core y las corre en sus tres configuraciones, también en armv7 bajo `qemu-arm`.
 
 - `ck_ui_regist` (`ui_regist.c`): guardar un registro en un archivo que no existe (ni su carpeta), encima de los que dejó `ckctl` sin perderlos, reemplazando el de la misma consola, con el registro lleno (no toca el archivo), con un archivo que no se puede leer (lo deja igual) o escribir, y la frase con el código HTTP y la razón, recortada sin partir una letra.
-- `ck_ui_stream` (`ui_stream.c`): solo "ya está en uso" antes de que llegue la sesión se vuelve a pedir, hasta el límite y cubriendo la espera de la PS5; cada motivo de fin tiene su frase; la línea de métricas con coma decimal, redondeo, valores imposibles y un búfer corto.
+- `ck_ui_stream` (`ui_stream.c`): antes de que llegue la sesión, se vuelve a pedir solo con "ya está en uso", o con la conexión de control fallida justo después de otra sesión o a mitad de los reintentos, hasta el límite y cubriendo la espera de la PS5; cada motivo de fin tiene su frase; la línea de métricas con coma decimal, redondeo, valores imposibles y un búfer corto.
 - `ck_ui_settings` (`ui_settings.c`): cada combinación que ofrece la pantalla sobrevive al archivo, un archivo vacío o con valores que no se ofrecen da los de por defecto (cada valor por su lado), el bitrate a mano se respeta en su rango, el bitrate automático es el del core para cada resolución y el resumen de la lista.
 - `ck_ui_console_rows` (`ui_console_rows.c`): cada estado y acción de una fila, el orden (el mismo sin importar en qué orden contestaron las consolas), el `host_id` en minúsculas, el nombre guardado sin NUL, el target del registro, un arreglo corto que no se desborda y la IP que se actualiza cuando la consola contesta desde otra.

@@ -2,6 +2,8 @@
 
 #import "CKStreamViewController.h"
 
+#import <QuartzCore/QuartzCore.h>
+
 #import "Bridge/CKSession.h"
 #import "CKTheme.h"
 
@@ -12,6 +14,9 @@
 
 @interface CKStreamViewController () <CKSessionDelegate>
 @end
+
+/** When the last session that streamed ended, by CACurrentMediaTime(); negative before any. */
+static CFTimeInterval CKLastSessionEnd = -1;
 
 @implementation CKStreamViewController
 {
@@ -232,6 +237,9 @@
 {
 	if(!_session)
 		return;
+	// The console takes a while to close it: the next start may be refused at first.
+	if(_streamed)
+		CKLastSessionEnd = CACurrentMediaTime();
 	_session.delegate = nil;
 	[_session stop];
 	[_session removeAllInputSources];
@@ -254,7 +262,8 @@
 {
 	if(session != _session || _leaving)
 		return;
-	if(ck_ui_session_should_retry(reason, _streamed, _retries))
+	double since = CKLastSessionEnd < 0 ? -1 : CACurrentMediaTime() - CKLastSessionEnd;
+	if(ck_ui_session_should_retry(reason, _streamed, _retries, since))
 	{
 		_retries++;
 		[self showStatus:[NSString stringWithFormat:@"La consola todavía está cerrando la sesión anterior. Pruebo otra "
@@ -262,7 +271,7 @@
 		__weak CKStreamViewController *weak = self;
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CK_UI_SESSION_RETRY_SECONDS * NSEC_PER_SEC)),
 			dispatch_get_main_queue(), ^{
-				[weak retryAfterInUse:session];
+				[weak retryWhileBusy:session];
 			});
 		return;
 	}
@@ -273,7 +282,7 @@
 	[self showEnd:text];
 }
 
-- (void)retryAfterInUse:(CKSession *)session
+- (void)retryWhileBusy:(CKSession *)session
 {
 	// Left or gave up meanwhile.
 	if(session != _session || _leaving)

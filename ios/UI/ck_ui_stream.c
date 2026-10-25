@@ -5,9 +5,16 @@
 #include <math.h>
 #include <stdio.h>
 
-bool ck_ui_session_should_retry(ChiakiQuitReason reason, bool streamed, unsigned retries)
+bool ck_ui_session_should_retry(ChiakiQuitReason reason, bool streamed, unsigned retries, double since_last_session)
 {
-	return reason == CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE && !streamed && retries < CK_UI_SESSION_RETRY_MAX;
+	if(streamed || retries >= CK_UI_SESSION_RETRY_MAX)
+		return false;
+	if(reason == CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE)
+		return true;
+	// Without a session just before, a failed connection is a real one: say so instead of waiting 30 s.
+	if(reason == CHIAKI_QUIT_REASON_CTRL_CONNECT_FAILED)
+		return retries > 0 || (since_last_session >= 0 && since_last_session < CK_UI_SESSION_BUSY_SECONDS);
+	return false;
 }
 
 const char *ck_ui_quit_reason_string(ChiakiQuitReason reason)

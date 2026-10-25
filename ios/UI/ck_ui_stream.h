@@ -19,19 +19,27 @@ extern "C" {
 #endif
 
 /**
- * After a session closes, the PS5 refuses a new one with "Remote is already
- * in use" for about 4 to 8 seconds (A2, cksession -n 20). The screen asks
- * again every CK_UI_SESSION_RETRY_SECONDS, up to CK_UI_SESSION_RETRY_MAX times.
+ * After a session closes, TheHuAx's PS5 refuses a new one for 10 to 20 s:
+ * sometimes first by not taking the control connection, then with "Remote is
+ * already in use" (A2 with cksession, A3 with CK Video). The screen asks
+ * again every CK_UI_SESSION_RETRY_SECONDS, up to CK_UI_SESSION_RETRY_MAX
+ * times: a window of 30 s.
  */
 #define CK_UI_SESSION_RETRY_SECONDS 2
-#define CK_UI_SESSION_RETRY_MAX 10
+#define CK_UI_SESSION_RETRY_MAX 15
+
+/** A failed control connection this soon after the previous session ended counts as the console still closing it. */
+#define CK_UI_SESSION_BUSY_SECONDS 30
 
 /**
- * Whether to start the session again after it ended with reason: only a
- * refusal for being in use, before any video came (streamed false), and
- * while retries, the ones already made, is below CK_UI_SESSION_RETRY_MAX.
+ * Whether to start the session again after it ended with reason, before any
+ * video came (streamed false) and while retries, the ones already made, is
+ * below CK_UI_SESSION_RETRY_MAX: on "already in use", and on a failed control
+ * connection while the console may still be closing the previous session,
+ * that is, since_last_session seconds after one ended or once retrying.
+ * since_last_session is negative when no session has ended yet.
  */
-bool ck_ui_session_should_retry(ChiakiQuitReason reason, bool streamed, unsigned retries);
+bool ck_ui_session_should_retry(ChiakiQuitReason reason, bool streamed, unsigned retries, double since_last_session);
 
 /** A Spanish sentence for why the session ended, and what to do about it. */
 const char *ck_ui_quit_reason_string(ChiakiQuitReason reason);
