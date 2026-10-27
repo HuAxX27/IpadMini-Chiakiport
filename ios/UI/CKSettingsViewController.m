@@ -151,7 +151,8 @@ static const CGFloat CKSegmentWidth = 420;
 	CKSettings settings = _store.settings;
 	char summary[96];
 	ck_ui_settings_summary(&settings, summary, sizeof(summary));
-	NSMutableString *footer = [NSMutableString stringWithFormat:@"Se usan desde la próxima sesión: %s.", summary];
+	// UTF-8: through @(), not %s, which reads Mac Roman.
+	NSMutableString *footer = [NSMutableString stringWithFormat:@"Se usan desde la próxima sesión: %@.", @(summary)];
 	if(ck_ui_bitrate_index(settings.bitrate_kbps) < 0)
 		[footer appendString:@" El bitrate está puesto a mano en el archivo de ajustes; elige uno para cambiarlo."];
 	[footer appendString:@"\n\nLo probado en el iPad mini es 540p a 30 cuadros por segundo. 720p y 60 cuadros por "
