@@ -3,6 +3,7 @@
 #import "CKVViewController.h"
 
 #import "CKVCapturePlayer.h"
+#import "CKVLiveSession.h"
 #import "CKVVideoView.h"
 
 #include "CKVideoSink.h"
@@ -25,6 +26,9 @@ static uint32_t CKVResidentKB(void)
 	return (uint32_t)(info.resident_size / 1024);
 }
 
+@interface CKVViewController () <CKVLiveSessionDelegate>
+@end
+
 @implementation CKVViewController
 {
 	CKVVideoView *_videoView;
@@ -33,6 +37,11 @@ static uint32_t CKVResidentKB(void)
 	UILabel *_statusLabel;
 	UILabel *_statsLabel;
 	CKVCapturePlayer *_player;
+	/** A3.4: the PS5 live, instead of the capture. */
+	CKVLiveSession *_live;
+	CKMetrics _metrics;
+	BOOL _haveMetrics;
+	BOOL _firstFrameLogged;
 	NSTimer *_timer;
 	NSUInteger _seconds;
 	/** Since the start of playback. */
@@ -85,23 +94,24 @@ static uint32_t CKVResidentKB(void)
 	[_videoView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(togglePanel)]];
 	_sink = ck_video_sink_new((__bridge void *)_videoView.displayLayer);
 
-	_panel = [[UIView alloc] initWithFrame:CGRectMake(16, 16, 560, 384)];
+	_panel = [[UIView alloc] initWithFrame:CGRectMake(16, 16, 600, 404)];
 	_panel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.65];
 	_panel.layer.cornerRadius = 12;
 	[self.view addSubview:_panel];
 
 	UIFont *mono = [UIFont fontWithName:@"Menlo-Regular" size:15] ?: [UIFont systemFontOfSize:15];
-	UILabel *title = [self addLabelWithFrame:CGRectMake(16, 10, 528, 28) font:[UIFont boldSystemFontOfSize:22]];
+	UILabel *title = [self addLabelWithFrame:CGRectMake(16, 10, 568, 28) font:[UIFont boldSystemFontOfSize:22]];
 	title.text = [NSString stringWithFormat:@"CK Video %@ (%s)",
 		[NSBundle mainBundle].infoDictionary[@"CFBundleShortVersionString"], CK_GIT_COMMIT];
-	_statusLabel = [self addLabelWithFrame:CGRectMake(16, 40, 528, 48) font:[UIFont systemFontOfSize:16]];
-	_statsLabel = [self addLabelWithFrame:CGRectMake(16, 90, 528, 176) font:mono];
-	[self addButton:@"Reproducir la captura" action:@selector(playCapture) frame:CGRectMake(16, 272, 300, 44)];
-	[self addButton:@"Detener" action:@selector(stopAll) frame:CGRectMake(332, 272, 212, 44)];
+	_statusLabel = [self addLabelWithFrame:CGRectMake(16, 40, 568, 48) font:[UIFont systemFontOfSize:16]];
+	_statsLabel = [self addLabelWithFrame:CGRectMake(16, 90, 568, 196) font:mono];
+	[self addButton:@"Reproducir la captura" action:@selector(playCapture) frame:CGRectMake(16, 292, 250, 44)];
+	[self addButton:@"Conectar a la PS5" action:@selector(connectToConsole) frame:CGRectMake(276, 292, 200, 44)];
+	[self addButton:@"Detener" action:@selector(stopAll) frame:CGRectMake(486, 292, 98, 44)];
 	// A3.3: the failures the sink must recover from, on the next frame.
-	[self addButton:@"Simular pérdida" action:@selector(simulateLostFrame) frame:CGRectMake(16, 326, 220, 44)];
+	[self addButton:@"Simular pérdida" action:@selector(simulateLostFrame) frame:CGRectMake(16, 346, 250, 44)];
 	[self addButton:@"Simular decodificador roto" action:@selector(simulateBrokenDecoder)
-			  frame:CGRectMake(252, 326, 292, 44)];
+			  frame:CGRectMake(276, 346, 308, 44)];
 
 	_statusLabel.text = _sink ? @"Toca el video para ocultar o mostrar este panel."
 		: @"No pude crear el sumidero de video.";
@@ -152,11 +162,37 @@ static uint32_t CKVResidentKB(void)
 		(unsigned long)_player.frameCount, _player.byteCount / 1048576.0];
 	printf("Reproduzco %s\n", _statusLabel.text.UTF8String);
 	ck_video_sink_reset(_sink);
+	[self startCounting];
+	[_player startWithSink:_sink];
+}
+
+- (void)connectToConsole
+{
+	[self stopAll];
+	if(!_sink)
+		return;
+	NSString *error = nil;
+	_live = [[CKVLiveSession alloc] initWithSink:_sink error:&error];
+	if(!_live)
+	{
+		_statusLabel.text = error;
+		printf("%s\n", error.UTF8String);
+		return;
+	}
+	_live.delegate = self;
+	[self startCounting];
+	[_live start];
+}
+
+/** Clears the counters and shows them every second from now on. */
+- (void)startCounting
+{
 	CKVideoSinkStats discard;
 	ck_video_sink_take_all_stats(_sink, &discard);
 	memset(&_total, 0, sizeof(_total));
 	_seconds = 0;
-	[_player startWithSink:_sink];
+	_haveMetrics = NO;
+	_firstFrameLogged = NO;
 	[UIApplication sharedApplication].idleTimerDisabled = YES;
 	_timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tick) userInfo:nil repeats:YES];
 }
@@ -165,14 +201,45 @@ static uint32_t CKVResidentKB(void)
 {
 	[_timer invalidate];
 	_timer = nil;
-	if(_player)
+	if(_player || _live)
 	{
 		[_player stop];
+		// Returns once the core's threads have joined: nothing reaches the sink after it.
+		[_live stop];
 		[self tick];
 		printf("Detenido tras %lu s\n", (unsigned long)_seconds);
 		_player = nil;
+		_live = nil;
 	}
 	[UIApplication sharedApplication].idleTimerDisabled = NO;
+}
+
+// CKVLiveSessionDelegate
+
+- (void)liveSession:(CKVLiveSession *)live didSay:(NSString *)status
+{
+	if(live == _live)
+		_statusLabel.text = status;
+}
+
+- (void)liveSession:(CKVLiveSession *)live didUpdateMetrics:(CKMetrics)metrics
+{
+	if(live != _live)
+		return;
+	_metrics = metrics;
+	_haveMetrics = YES;
+}
+
+- (void)liveSessionDidEnd:(CKVLiveSession *)live
+{
+	// Out of the session's own call before letting go of it; the status stays on screen.
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if(live != self->_live)
+			return;
+		NSString *status = self->_statusLabel.text;
+		[self stopAll];
+		self->_statusLabel.text = status;
+	});
 }
 
 - (void)tick
@@ -196,20 +263,35 @@ static uint32_t CKVResidentKB(void)
 
 	uint32_t decodes = s.core.frames_decoded + s.core.frames_failed;
 	double avg_ms = decodes ? s.core.decode_us / 1000.0 / decodes : 0.0;
+	double first_ms = _live.firstFrameMs;
+	if(first_ms > 0 && !_firstFrameLogged)
+	{
+		_firstFrameLogged = YES;
+		printf("%lu s: primer cuadro decodificado a los %.0f ms de pedir la sesión\n", (unsigned long)_seconds, first_ms);
+	}
+	// The capture's loop and the keyframes its player sent, or what the core says of the PS5's stream.
+	NSString *source;
+	if(_live)
+		source = [NSString stringWithFormat:@"PS5: %.1f cuadros/s, %u kbps, %u perdidos;\n  primer cuadro %@",
+			_metrics.fps_decoded, _metrics.bitrate_kbps, _metrics.frames_lost,
+			first_ms > 0 ? [NSString stringWithFormat:@"a los %.0f ms", first_ms] : @"aún no"];
+	else
+		source = [NSString stringWithFormat:@"Captura: vuelta %lu, keyframes enviados: %lu\n",
+			(unsigned long)_player.loops + 1, (unsigned long)_player.keyframesSent];
 	NSString *now = [NSString stringWithFormat:
 		@"Este segundo: %u decodificados, %u mostrados\n"
 		@"Decodificar: %.1f ms promedio, %.1f ms máximo\n"
-		@"En total (%lu s, vuelta %lu): %u decodificados,\n"
-		@"  %u fallidos, %u omitidos, %u rechazados por la capa\n"
+		@"En total (%lu s): %u decodificados, %u fallidos,\n"
+		@"  %u omitidos, %u rechazados por la capa\n"
 		@"Decodificadores creados: %u, rotos: %u\n"
 		@"Esperando keyframe: %u cuadros, %u esperas,\n"
-		@"  la más larga %.0f ms; keyframes enviados: %lu\n"
+		@"  la más larga %.0f ms\n"
+		@"%@\n"
 		@"Memoria: %u KB",
 		s.core.frames_decoded, s.frames_shown, avg_ms, s.core.decode_us_max / 1000.0,
-		(unsigned long)_seconds, (unsigned long)_player.loops + 1, _total.core.frames_decoded,
-		_total.core.frames_failed, _total.core.frames_skipped, _total.layer_failures, _total.core.configures,
-		_total.core.decoder_broken, _total.core.frames_waiting, _total.core.keyframe_waits,
-		_total.core.keyframe_wait_us_max / 1000.0, (unsigned long)_player.keyframesSent, CKVResidentKB()];
+		(unsigned long)_seconds, _total.core.frames_decoded, _total.core.frames_failed, _total.core.frames_skipped,
+		_total.layer_failures, _total.core.configures, _total.core.decoder_broken, _total.core.frames_waiting,
+		_total.core.keyframe_waits, _total.core.keyframe_wait_us_max / 1000.0, source, CKVResidentKB()];
 	_statsLabel.text = now;
 	if(s.core.keyframe_waits)
 		printf("%lu s: volvió la imagen tras esperar el keyframe %.0f ms (%u cuadros esperando en este segundo)\n",
@@ -220,6 +302,10 @@ static uint32_t CKVResidentKB(void)
 			(unsigned long)_seconds, s.core.frames_decoded, avg_ms, _total.core.decode_us_max / 1000.0,
 			_total.core.frames_decoded, _total.core.frames_failed, _total.core.frames_skipped,
 			_total.core.frames_waiting, _total.core.decoder_broken, _total.layer_failures, CKVResidentKB());
+	if(_seconds % 10 == 0 && _live && _haveMetrics)
+		printf("%lu s: la PS5 manda %.1f cuadros/s, %u kbps, %u perdidos en la red; %.1f ms en el callback\n",
+			(unsigned long)_seconds, _metrics.fps_decoded, _metrics.bitrate_kbps, _metrics.frames_lost,
+			_metrics.decode_ms_avg);
 }
 
 @end
