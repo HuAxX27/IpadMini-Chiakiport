@@ -1,0 +1,40 @@
+# iOS .deb pre-release cleanup (A1)
+#
+# When a PR closes, merged or not, deletes the public pre-release ipad-pr-<N>
+# that the "publish" job of ios-ci.yml keeps with the PR's .debs, and its tag.
+# Merged work stays downloadable in ipad-main.
+
+name: iOS debs cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    name: Delete the PR's pre-release
+    # A fork's PR never gets a pre-release, and its token cannot delete one.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # Same group as the PR's "publish" job: waits for one that is running.
+    concurrency:
+      group: ipad-debs-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Delete ipad-pr-${{ github.event.pull_request.number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ipad-pr-${{ github.event.pull_request.number }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            echo "Borrado el pre-release $TAG y su tag"
+          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
+            echo "Borrado el tag $TAG, que no tenía pre-release"
+          else
+            echo "No hay pre-release $TAG"
+          fi

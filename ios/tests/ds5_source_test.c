@@ -119,10 +119,12 @@ int main(void)
 	CHECK(!poll_until_check(&source, &state));
 	CHECK(source.shared != NULL);
 	CHECK_EQ(source.maps, 1);
+	CHECK(!ck_ds5_source_connected(&source));
 
 	// The pad sends a simple report with cross: it stays held until the next report.
 	write_simple(w, CROSS);
 	CHECK(input.poll(input.user, &state));
+	CHECK(ck_ds5_source_connected(&source));
 	CHECK_EQ(state.buttons, CHIAKI_CONTROLLER_BUTTON_CROSS);
 	CHECK_EQ(state.touches[0].id, -1);
 	CHECK_EQ(source.kind, CK_DS5_REPORT_BT_SIMPLE);
@@ -157,6 +159,7 @@ int main(void)
 	ck_ds5_shared_write(w, NULL, 0);
 	CHECK(!input.poll(input.user, &state));
 	CHECK(!input.poll(input.user, &state));
+	CHECK(!ck_ds5_source_connected(&source));
 	CHECK_EQ(source.state.buttons, 0);
 	CHECK_EQ(source.state.touches[0].id, -1);
 
