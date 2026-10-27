@@ -7,10 +7,11 @@
 // it, and keeps the counters behind ck_video_sink_take_stats().
 //
 // Recovery (A3.3): a frame the decoder rejects is lost for the core, which
-// points the next frames at older pictures. A decoder that is new, broke, or
-// lost its keyframe has no pictures to refer to, so it takes nothing but a
+// holds back the frames that refer to it and asks the console for an IDR (in
+// H.264 it cannot point them at older pictures). A decoder that is new, broke,
+// or lost its keyframe has no pictures to refer to, so it takes nothing but a
 // keyframe (an IDR, or a frame of I slices only); the frames refused
-// meanwhile make the core ask the console for one. The decoder sits behind
+// meanwhile are lost for the core too. The decoder sits behind
 // CKVideoDecoder: VideoToolbox in CKVideoSink.m, a fake in the Linux tests
 // (ios/tests/ck_video_tests.c).
 //

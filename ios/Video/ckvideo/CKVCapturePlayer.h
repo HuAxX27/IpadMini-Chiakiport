@@ -6,7 +6,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/** As many frames as the core keeps references for (CHIAKI_VIDEO_RECEIVER_REF_SLOTS). */
+/** Refused frames in a row before the player sends a keyframe, as the console does when the core asks for one. */
 #define CKV_KEYFRAME_AFTER 8
 
 /**
