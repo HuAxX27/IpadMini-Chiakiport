@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// A3.2: contract C2 (CKVideoSink.h) with VideoToolbox. ck_video_core.c does
+// A3.2 to A3.5: contract C2 (CKVideoSink.h) with VideoToolbox. ck_video_core.c does
 // the work that can be tested on Linux; this file is its decoder:
 //
 //   - VTDecompressionSession, synchronous: each frame is decoded before the
@@ -56,7 +56,17 @@ struct ck_video_sink_t
 	// Counted inside the lock, taken by ck_video_sink_take_all_stats() without it.
 	uint32_t frames_shown;
 	uint32_t layer_failures;
+	/** The last picture's size and the part of it to show, each as width << 16 | height. */
+	uint32_t image_size;
+	uint32_t visible_size;
 };
+
+static uint32_t pack_size(double width, double height)
+{
+	uint32_t w = width > 0 && width < 65536 ? (uint32_t)width : 0;
+	uint32_t h = height > 0 && height < 65536 ? (uint32_t)height : 0;
+	return w << 16 | h;
+}
 
 static void sink_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
@@ -89,6 +99,14 @@ static void show_image(CKVideoSink *sink, CVImageBufferRef image)
 			sink_log("no pude describir la imagen decodificada (%d)", (int)status);
 			return;
 		}
+		// The PS5 codes 960x544 and crops it to 960x540 in the SPS: the
+		// clean rect says what the layer should show.
+		size_t width = CVPixelBufferGetWidth(image);
+		size_t height = CVPixelBufferGetHeight(image);
+		CGRect visible = CVImageBufferGetCleanRect(image);
+		__atomic_store_n(&sink->image_size, pack_size(width, height), __ATOMIC_RELAXED);
+		__atomic_store_n(&sink->visible_size, pack_size(visible.size.width, visible.size.height), __ATOMIC_RELAXED);
+		sink_log("imágenes de %zux%zu, a la vista %.0fx%.0f", width, height, visible.size.width, visible.size.height);
 	}
 	// With "display immediately" the layer ignores the time; it is set anyway.
 	CMSampleTimingInfo timing = { kCMTimeInvalid, CMClockGetTime(CMClockGetHostTimeClock()), kCMTimeInvalid };
@@ -307,6 +325,12 @@ void ck_video_sink_take_all_stats(CKVideoSink *sink, CKVideoSinkStats *stats)
 	ck_video_core_take_stats(sink->core, &stats->core);
 	stats->frames_shown = __atomic_exchange_n(&sink->frames_shown, 0, __ATOMIC_RELAXED);
 	stats->layer_failures = __atomic_exchange_n(&sink->layer_failures, 0, __ATOMIC_RELAXED);
+	uint32_t image = __atomic_load_n(&sink->image_size, __ATOMIC_RELAXED);
+	uint32_t visible = __atomic_load_n(&sink->visible_size, __ATOMIC_RELAXED);
+	stats->image_width = image >> 16;
+	stats->image_height = image & 0xffff;
+	stats->visible_width = visible >> 16;
+	stats->visible_height = visible & 0xffff;
 }
 
 void ck_video_sink_simulate(CKVideoSink *sink, CKVideoSimulation what)
