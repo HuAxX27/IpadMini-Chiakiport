@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
-// A3.2: what CKVideoSink counts beyond ck_video_sink_take_stats() (contract
-// C2), for the CK Video test app (ios/Video/ckvideo) and A7's measurements.
-// Not a contract: it may change with the sink.
+// A3.2 and A3.3: what CKVideoSink offers beyond contract C2, for the CK
+// Video test app (ios/Video/ckvideo) and A7's measurements: everything it
+// counts, and failures to simulate. Not a contract: it may change with the
+// sink.
 
 #ifndef CK_VIDEO_SINK_STATS_H
 #define CK_VIDEO_SINK_STATS_H
@@ -28,6 +29,9 @@ typedef struct ck_video_sink_stats_t
  * then resets it: use one of the two.
  */
 void ck_video_sink_take_all_stats(CKVideoSink *sink, CKVideoSinkStats *stats);
+
+/** Makes the next frame fail as asked (ck_video_core_simulate()), to try the recovery. Any thread. */
+void ck_video_sink_simulate(CKVideoSink *sink, CKVideoSimulation what);
 
 #ifdef __cplusplus
 }

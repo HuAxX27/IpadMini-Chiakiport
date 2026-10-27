@@ -85,7 +85,7 @@ static uint32_t CKVResidentKB(void)
 	[_videoView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(togglePanel)]];
 	_sink = ck_video_sink_new((__bridge void *)_videoView.displayLayer);
 
-	_panel = [[UIView alloc] initWithFrame:CGRectMake(16, 16, 560, 300)];
+	_panel = [[UIView alloc] initWithFrame:CGRectMake(16, 16, 560, 384)];
 	_panel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.65];
 	_panel.layer.cornerRadius = 12;
 	[self.view addSubview:_panel];
@@ -95,9 +95,13 @@ static uint32_t CKVResidentKB(void)
 	title.text = [NSString stringWithFormat:@"CK Video %@ (%s)",
 		[NSBundle mainBundle].infoDictionary[@"CFBundleShortVersionString"], CK_GIT_COMMIT];
 	_statusLabel = [self addLabelWithFrame:CGRectMake(16, 40, 528, 48) font:[UIFont systemFontOfSize:16]];
-	_statsLabel = [self addLabelWithFrame:CGRectMake(16, 90, 528, 140) font:mono];
-	[self addButton:@"Reproducir la captura" action:@selector(playCapture) frame:CGRectMake(16, 240, 300, 44)];
-	[self addButton:@"Detener" action:@selector(stopAll) frame:CGRectMake(332, 240, 212, 44)];
+	_statsLabel = [self addLabelWithFrame:CGRectMake(16, 90, 528, 176) font:mono];
+	[self addButton:@"Reproducir la captura" action:@selector(playCapture) frame:CGRectMake(16, 272, 300, 44)];
+	[self addButton:@"Detener" action:@selector(stopAll) frame:CGRectMake(332, 272, 212, 44)];
+	// A3.3: the failures the sink must recover from, on the next frame.
+	[self addButton:@"Simular pérdida" action:@selector(simulateLostFrame) frame:CGRectMake(16, 326, 220, 44)];
+	[self addButton:@"Simular decodificador roto" action:@selector(simulateBrokenDecoder)
+			  frame:CGRectMake(252, 326, 292, 44)];
 
 	_statusLabel.text = _sink ? @"Toca el video para ocultar o mostrar este panel."
 		: @"No pude crear el sumidero de video.";
@@ -106,6 +110,22 @@ static uint32_t CKVResidentKB(void)
 - (void)togglePanel
 {
 	_panel.hidden = !_panel.hidden;
+}
+
+- (void)simulateLostFrame
+{
+	if(!_sink)
+		return;
+	ck_video_sink_simulate(_sink, CK_VIDEO_SIMULATE_LOST_FRAME);
+	printf("%lu s: simulo un cuadro perdido\n", (unsigned long)_seconds);
+}
+
+- (void)simulateBrokenDecoder
+{
+	if(!_sink)
+		return;
+	ck_video_sink_simulate(_sink, CK_VIDEO_SIMULATE_BROKEN_DECODER);
+	printf("%lu s: simulo un decodificador roto\n", (unsigned long)_seconds);
 }
 
 - (void)playCapture
@@ -165,6 +185,10 @@ static uint32_t CKVResidentKB(void)
 	_total.core.frames_skipped += s.core.frames_skipped;
 	_total.core.decoder_broken += s.core.decoder_broken;
 	_total.core.configures += s.core.configures;
+	_total.core.frames_waiting += s.core.frames_waiting;
+	_total.core.keyframe_waits += s.core.keyframe_waits;
+	if(s.core.keyframe_wait_us_max > _total.core.keyframe_wait_us_max)
+		_total.core.keyframe_wait_us_max = s.core.keyframe_wait_us_max;
 	_total.frames_shown += s.frames_shown;
 	_total.layer_failures += s.layer_failures;
 	if(s.core.decode_us_max > _total.core.decode_us_max)
@@ -178,17 +202,24 @@ static uint32_t CKVResidentKB(void)
 		@"En total (%lu s, vuelta %lu): %u decodificados,\n"
 		@"  %u fallidos, %u omitidos, %u rechazados por la capa\n"
 		@"Decodificadores creados: %u, rotos: %u\n"
+		@"Esperando keyframe: %u cuadros, %u esperas,\n"
+		@"  la más larga %.0f ms; keyframes enviados: %lu\n"
 		@"Memoria: %u KB",
 		s.core.frames_decoded, s.frames_shown, avg_ms, s.core.decode_us_max / 1000.0,
 		(unsigned long)_seconds, (unsigned long)_player.loops + 1, _total.core.frames_decoded,
 		_total.core.frames_failed, _total.core.frames_skipped, _total.layer_failures, _total.core.configures,
-		_total.core.decoder_broken, CKVResidentKB()];
+		_total.core.decoder_broken, _total.core.frames_waiting, _total.core.keyframe_waits,
+		_total.core.keyframe_wait_us_max / 1000.0, (unsigned long)_player.keyframesSent, CKVResidentKB()];
 	_statsLabel.text = now;
+	if(s.core.keyframe_waits)
+		printf("%lu s: volvió la imagen tras esperar el keyframe %.0f ms (%u cuadros esperando en este segundo)\n",
+			(unsigned long)_seconds, s.core.keyframe_wait_us_max / 1000.0, s.core.frames_waiting);
 	if(_seconds % 10 == 0)
-		printf("%lu s: %u/s, %.1f ms (máx %.1f), total %u decodificados, %u fallidos, %u omitidos, capa %u, %u KB\n",
+		printf("%lu s: %u/s, %.1f ms (máx %.1f), total %u decodificados, %u fallidos, %u omitidos, %u esperando, "
+			   "%u rotos, capa %u, %u KB\n",
 			(unsigned long)_seconds, s.core.frames_decoded, avg_ms, _total.core.decode_us_max / 1000.0,
-			_total.core.frames_decoded, _total.core.frames_failed, _total.core.frames_skipped, _total.layer_failures,
-			CKVResidentKB());
+			_total.core.frames_decoded, _total.core.frames_failed, _total.core.frames_skipped,
+			_total.core.frames_waiting, _total.core.decoder_broken, _total.layer_failures, CKVResidentKB());
 }
 
 @end

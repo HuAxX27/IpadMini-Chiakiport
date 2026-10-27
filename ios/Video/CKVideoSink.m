@@ -309,6 +309,11 @@ void ck_video_sink_take_all_stats(CKVideoSink *sink, CKVideoSinkStats *stats)
 	stats->layer_failures = __atomic_exchange_n(&sink->layer_failures, 0, __ATOMIC_RELAXED);
 }
 
+void ck_video_sink_simulate(CKVideoSink *sink, CKVideoSimulation what)
+{
+	ck_video_core_simulate(sink->core, what);
+}
+
 void ck_video_sink_take_stats(CKVideoSink *sink, uint32_t *frames_decoded, float *decode_ms_avg)
 {
 	CKVideoSinkStats stats;

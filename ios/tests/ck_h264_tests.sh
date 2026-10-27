@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds and runs the video tests (A3) on Linux: ios/Video/ck_h264.c (A3.1)
-# and the C half of the video sink, ios/Video/ck_video_core.c (A3.2).
+# and the C half of the video sink, ios/Video/ck_video_core.c (A3.2, and its
+# recovery from A3.3).
 # Usage: ./ios/tests/ck_h264_tests.sh [capture.h264 ...]
 #
 #   1. Unit tests of both, with AddressSanitizer and UBSan when the compiler
@@ -15,8 +16,12 @@
 #   5. The sample, every capture and the clip sent through the sink frame by
 #      frame to a fake decoder; ffmpeg must decode what the decoder got into
 #      the same pictures as the original, frame for frame.
+#   6. The same, breaking the decoder on every 10th frame: each frame must be
+#      decoded, lost or held until the next keyframe as the recovery says, and
+#      what the decoder got must decode into the original's pictures for the
+#      frames it kept, with no picture made from a missing reference.
 #
-# Steps 2, the captures against ffmpeg, the fresh clip and step 5 need extra
+# Steps 2, the captures against ffmpeg, the fresh clip and steps 5 and 6 need extra
 # tools (apt install gcc-arm-linux-gnueabihf qemu-user ffmpeg); without them
 # they print SKIP. Any failure exits non-zero.
 set -euo pipefail
@@ -74,6 +79,7 @@ if command -v arm-linux-gnueabihf-gcc >/dev/null && command -v qemu-arm >/dev/nu
 	qemu-arm -cpu cortex-a9 "$BUILD/ck_video_tests_armv7"
 	for capture in "$SAMPLE" "$@"; do
 		qemu-arm -cpu cortex-a9 "$BUILD/ck_video_tests_armv7" replay "$capture" "$BUILD/replay_armv7.h264"
+		qemu-arm -cpu cortex-a9 "$BUILD/ck_video_tests_armv7" replay "$capture" "$BUILD/replay_armv7.h264" 10 "$BUILD/kept_armv7.txt"
 	done
 else
 	echo "SKIP: needs arm-linux-gnueabihf-gcc and qemu-arm"
@@ -119,6 +125,22 @@ if command -v ffmpeg >/dev/null; then
 		[ -s "$BUILD/original.md5" ]
 		cmp "$BUILD/original.md5" "$BUILD/replay.md5"
 		echo "$stream: what the decoder got decodes to the same $(wc -l <"$BUILD/original.md5") pictures"
+	done
+else
+	echo "SKIP: needs ffmpeg"
+fi
+
+echo "== recovery: the decoder breaks on every 10th frame"
+if command -v ffmpeg >/dev/null; then
+	for stream in "${streams[@]}"; do
+		"$BUILD/ck_video_tests" replay "$stream" "$BUILD/broken.h264" 10 "$BUILD/kept.txt"
+		# The original's pictures for the frames kept, against what the decoder got.
+		frame_md5s "$stream" | awk -F', *' 'NR == FNR { keep[$1 + 1] = 1; next } FNR in keep { print $NF }' \
+			"$BUILD/kept.txt" - >"$BUILD/original.md5"
+		frame_md5s "$BUILD/broken.h264" | awk -F', *' '{ print $NF }' >"$BUILD/broken.md5"
+		[ -s "$BUILD/original.md5" ]
+		cmp "$BUILD/original.md5" "$BUILD/broken.md5"
+		echo "$stream: the $(wc -l <"$BUILD/broken.md5") pictures kept are the original's"
 	done
 else
 	echo "SKIP: needs ffmpeg"

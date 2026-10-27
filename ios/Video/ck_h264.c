@@ -95,6 +95,80 @@ bool ck_h264_next_access_unit(const uint8_t *buf, size_t size, size_t *pos, cons
 	return true;
 }
 
+// Reads the bits of a NAL unit's payload (RBSP), skipping the emulation
+// prevention byte of each 00 00 03.
+typedef struct
+{
+	const uint8_t *buf;
+	size_t size;
+	size_t byte;
+	unsigned bit;
+	unsigned zeros;
+} BitReader;
+
+static int read_bit(BitReader *r)
+{
+	if(r->bit == 0)
+	{
+		if(r->byte >= r->size)
+			return -1;
+		if(r->zeros >= 2 && r->buf[r->byte] == 3)
+		{
+			r->byte++;
+			r->zeros = 0;
+			if(r->byte >= r->size)
+				return -1;
+		}
+		r->zeros = r->buf[r->byte] ? 0 : r->zeros + 1;
+	}
+	int value = (r->buf[r->byte] >> (7 - r->bit)) & 1;
+	if(++r->bit == 8)
+	{
+		r->bit = 0;
+		r->byte++;
+	}
+	return value;
+}
+
+// An unsigned Exp-Golomb number, ue(v), of up to 32 bits.
+static bool read_ue(BitReader *r, uint32_t *value)
+{
+	unsigned leading = 0;
+	int b;
+	while((b = read_bit(r)) == 0)
+	{
+		if(++leading > 31)
+			return false;
+	}
+	if(b < 0)
+		return false;
+	uint32_t rest = 0;
+	for(unsigned i = 0; i < leading; i++)
+	{
+		b = read_bit(r);
+		if(b < 0)
+			return false;
+		rest = (rest << 1) | (uint32_t)b;
+	}
+	*value = (((uint32_t)1 << leading) - 1) + rest;
+	return true;
+}
+
+int ck_h264_slice_type(const uint8_t *nal, size_t nal_size)
+{
+	if(!nal || nal_size < 2)
+		return -1;
+	unsigned type = CK_H264_NAL_TYPE(nal[0]);
+	if(type != CK_H264_NAL_SLICE && type != CK_H264_NAL_IDR)
+		return -1;
+	// After the one-byte NAL header: first_mb_in_slice, then slice_type.
+	BitReader r = { nal, nal_size, 1, 0, 0 };
+	uint32_t first_mb, slice_type;
+	if(!read_ue(&r, &first_mb) || !read_ue(&r, &slice_type) || slice_type > 9)
+		return -1;
+	return (int)(slice_type % 5);
+}
+
 size_t ck_h264_avcc_max_size(size_t annexb_size)
 {
 	size_t extra = annexb_size / 4;
