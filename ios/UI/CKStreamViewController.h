@@ -2,11 +2,12 @@
 
 // The game screen: the console's video on the whole screen and nothing else.
 // A6.5 opens the session (CKSession) with the saved registration and the
-// settings, plays with the DualSense connected to the iPad (C4, A5), asks
-// again while the console is still closing the previous session, and says
-// why a session ended. A three-finger tap opens the menu: leave, or show the
-// metrics. The video (C2) and the audio (C3) plug in here when A3 and A4
-// land. Simulated consoles open no session.
+// settings, shows the video through CKVideoSink (C2, A3), plays with the
+// DualSense connected to the iPad or the touch controls (C4, A5), asks again
+// while the console is still closing the previous session, and says why a
+// session ended. A three-finger tap off the touch controls opens the menu:
+// leave, or show the metrics. The audio (C3) plugs in here when A4 lands.
+// Simulated consoles open no session.
 
 #import <UIKit/UIKit.h>
 

@@ -2,17 +2,46 @@
 
 #import "CKStreamViewController.h"
 
+#import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 
 #import "Bridge/CKSession.h"
 #import "CKTheme.h"
+#import "Input/CKTouchControlsView.h"
 
 #include "Input/ck_ds5_shared.h"
 #include "Input/ck_ds5_source.h"
 #include "Input/ck_pad_map.h"
+#include "Video/CKVideoSink.h"
 #include "ck_ui_stream.h"
 
-@interface CKStreamViewController () <CKSessionDelegate>
+#include <chiaki/common.h>
+
+/** The console's picture, scaled to fit, on black (contract C2: the sink draws into its layer). */
+@interface CKStreamVideoView : UIView
+@end
+
+@implementation CKStreamVideoView
+
++ (Class)layerClass
+{
+	return [AVSampleBufferDisplayLayer class];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+	self = [super initWithFrame:frame];
+	if(!self)
+		return nil;
+	self.backgroundColor = [UIColor blackColor];
+	self.userInteractionEnabled = NO;
+	((AVSampleBufferDisplayLayer *)self.layer).videoGravity = AVLayerVideoGravityResizeAspect;
+	return self;
+}
+
+@end
+
+@interface CKStreamViewController () <CKSessionDelegate, UIGestureRecognizerDelegate>
 @end
 
 /** When the last session that streamed ended, by CACurrentMediaTime(); negative before any. */
@@ -24,9 +53,12 @@ static CFTimeInterval CKLastSessionEnd = -1;
 	CKConsoleItem *_console;
 	CKSettings _settings;
 	CKSession *_session;
-	/** What the session polls on its input thread: alive until the session is stopped. */
+	/** What the session's threads use: alive until the session is stopped. */
 	CKDS5Source _ds5;
 	CKPadMapSource _pad;
+	CKVideoSink *_sink;
+	CKStreamVideoView *_videoView;
+	CKTouchControlsView *_touchControls;
 	/** The session reached streaming since its last start. */
 	BOOL _streamed;
 	/** Starts again after "already in use", since the screen opened or the user asked again. */
@@ -64,6 +96,9 @@ static CFTimeInterval CKLastSessionEnd = -1;
 {
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[self closeSession];
+	// Only once the session's threads have joined: the video thread feeds it.
+	if(_sink)
+		ck_video_sink_free(_sink);
 }
 
 - (UILabel *)labelWithSize:(CGFloat)size
@@ -95,6 +130,18 @@ static CFTimeInterval CKLastSessionEnd = -1;
 	self.view.backgroundColor = [UIColor blackColor];
 	self.view.multipleTouchEnabled = YES;
 
+	// From the back: the picture, the touch controls, then what the screen says.
+	_videoView = [[CKStreamVideoView alloc] initWithFrame:self.view.bounds];
+	_videoView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+	[self.view addSubview:_videoView];
+	if(!_service.simulated)
+		_sink = ck_video_sink_new((__bridge void *)_videoView.layer);
+	// Shown while streaming with no DualSense on the iPad; they take only the touches on a control.
+	_touchControls = [[CKTouchControlsView alloc] initWithFrame:self.view.bounds];
+	_touchControls.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+	_touchControls.hidden = YES;
+	[self.view addSubview:_touchControls];
+
 	_spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
 	_spinner.hidesWhenStopped = YES;
 	[self.view addSubview:_spinner];
@@ -102,7 +149,7 @@ static CFTimeInterval CKLastSessionEnd = -1;
 	_retryButton = [self buttonWithTitle:@"Volver a intentar" action:@selector(retryTapped)];
 	_backButton = [self buttonWithTitle:@"Volver a la lista" action:@selector(leave)];
 	_hintLabel = [self labelWithSize:17];
-	_hintLabel.text = @"Toca con tres dedos para salir";
+	_hintLabel.text = @"Toca con tres dedos para abrir el menú";
 
 	_metricsLabel = [self labelWithSize:14];
 	_metricsLabel.textColor = CKThemeText();
@@ -113,6 +160,7 @@ static CFTimeInterval CKLastSessionEnd = -1;
 
 	UITapGestureRecognizer *menu = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(menuGesture:)];
 	menu.numberOfTouchesRequired = 3;
+	menu.delegate = self;
 	[self.view addGestureRecognizer:menu];
 
 	if(_service.simulated)
@@ -181,17 +229,18 @@ static CFTimeInterval CKLastSessionEnd = -1;
 {
 	[self closeSession];
 	_ended = YES;
+	// The last picture would stay behind the words.
+	_videoView.hidden = YES;
+	_touchControls.hidden = YES;
 	[self showStatus:reason busy:NO];
 }
 
 - (void)showStreaming
 {
-	// Polled by the session's input thread; read here once a second, with the metrics.
-	if(ck_ds5_source_connected(&_ds5))
-		[self showStatus:@"" busy:NO];
-	else
-		[self showStatus:@"Conectada. No veo el DualSense: enciéndelo con el botón PS para que se conecte al iPad."
-			busy:NO];
+	[self showStatus:@"" busy:NO];
+	// Polled by the session's input thread; read here once a second, with the metrics. Hidden, the
+	// touch controls press nothing.
+	_touchControls.hidden = ck_ds5_source_connected(&_ds5);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +251,21 @@ static CFTimeInterval CKLastSessionEnd = -1;
 {
 	_ended = NO;
 	_retries = 0;
+	static ChiakiErrorCode lib_err;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		lib_err = chiaki_lib_init();
+	});
+	if(lib_err != CHIAKI_ERR_SUCCESS)
+	{
+		[self showEnd:[NSString stringWithFormat:@"No pude iniciar el core (%s).", chiaki_error_string(lib_err)]];
+		return;
+	}
+	if(!_sink)
+	{
+		[self showEnd:@"No pude preparar el video."];
+		return;
+	}
 	ChiakiRegisteredHost host;
 	if(![_service getRegisteredHost:&host forConsole:_console])
 	{
@@ -215,17 +279,24 @@ static CFTimeInterval CKLastSessionEnd = -1;
 		return;
 	}
 	_session = [[CKSession alloc] initWithHost:address registeredHost:&host settings:_settings];
+	memset(&host, 0, sizeof(host));
 	_session.delegate = self;
+	[_session setVideoSampleCallback:ck_video_sink_sample_cb user:_sink];
 	ck_ds5_source_init(&_ds5, CK_DS5_SHARED_PATH);
 	CKPadMap map;
 	ck_pad_map_set_default(&map);
 	[_session addInputSource:ck_pad_map_source_input(&_pad, ck_ds5_source_input(&_ds5), &map)];
+	[_session addInputSource:_touchControls.inputSource];
 	[self startSession];
 }
 
 - (void)startSession
 {
 	_streamed = NO;
+	// Joins what is left of a refused attempt, so nothing feeds the sink while it starts clean.
+	[_session stop];
+	ck_video_sink_reset(_sink);
+	_videoView.hidden = NO;
 	[self showStatus:[NSString stringWithFormat:@"Conectando con %@…", _console.name] busy:YES];
 	NSError *error;
 	if(![_session start:&error])
@@ -318,6 +389,12 @@ static CFTimeInterval CKLastSessionEnd = -1;
 // ---------------------------------------------------------------------------
 // The menu
 // ---------------------------------------------------------------------------
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch
+{
+	// Three fingers on the touch controls are playing, not asking for the menu.
+	return ![touch.view isDescendantOfView:_touchControls];
+}
 
 - (void)menuGesture:(UITapGestureRecognizer *)gesture
 {

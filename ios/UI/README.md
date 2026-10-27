@@ -17,9 +17,9 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 | `CKSettingsViewController` | La pantalla de ajustes |
 | `CKConsoleListViewController`, `CKConsoleCell` | La lista de consolas, la primera pantalla |
 | `CKRegistViewController` | El registro: Account ID, PIN y qué corregir si la consola dice que no |
-| `CKStreamViewController` | La pantalla de juego: la sesión (`CKSession`), el DualSense, el menú y las métricas |
+| `CKStreamViewController` | La pantalla de juego: la sesión (`CKSession`), el video, el DualSense y los controles táctiles, el menú y las métricas |
 | `CKAppDelegate`, `main.m`, `CKTheme.h` | Arranque y colores |
-| `shared_*.c`, `shared_CKSession.m` | Compilan dentro de la app el código de `ios/Bridge/` que también usan `ckctl` y `cksession`, y el del DualSense de `ios/Input/` (el `Makefile` dice por qué) |
+| `shared_*.c`, `shared_*.m` | Compilan dentro de la app el código de `ios/Bridge/` que también usan `ckctl` y `cksession`, el del DualSense y los controles táctiles de `ios/Input/` y el sumidero de video de `ios/Video/` (el `Makefile` dice por qué) |
 | `Makefile`, `control`, `Resources/` | El paquete de Theos, el `Info.plist` y los íconos |
 
 ## Pantallas
@@ -49,11 +49,13 @@ Toda la app va en horizontal, hacia cualquiera de los dos lados.
 
 `CKStreamViewController` abre la sesión de `CKSession` (C1) con el registro guardado, la IP donde contestó la consola y los ajustes de la app.
 
-- **Control.** El DualSense conectado directo al iPad (`CKDS5Source`, A5.8) con el mapeo por defecto (`ck_pad_map.h`, A5.4). Si la sesión está abierta y no hay pad, la pantalla lo dice. Los controles táctiles (A5.5) se agregan cuando lleguen a `main`.
+- **Video.** `CKVideoSink` (C2, A3) decodifica el H.264 con VideoToolbox y lo dibuja en una vista a pantalla completa con `AVSampleBufferDisplayLayer`, ajustado a la pantalla sobre negro. El sumidero se limpia antes de cada intento y se libera solo después de que `-[CKSession stop]` regresa. Al terminar la sesión la imagen se quita para que se lea el motivo.
+- **Control.** El DualSense conectado directo al iPad (`CKDS5Source`, A5.8) con el mapeo por defecto (`ck_pad_map.h`, A5.4), y los controles táctiles (`CKTouchControlsView`, A5.5) encima del video. Las dos fuentes van a la sesión y se combinan (C4). Los controles táctiles se muestran solo mientras no hay DualSense conectado; ocultos no presionan nada.
+- **Menú.** Un toque con tres dedos fuera de los controles táctiles: tres dedos sobre los controles son parte del juego.
 - **"Ya está en uso".** Justo después de cerrar una sesión, la PS5 rechaza otra durante 10 a 20 s: a veces primero no acepta la conexión de control y luego dice que ya está en uso. Si eso pasa antes de que llegue la sesión, la pantalla la vuelve a pedir cada 2 s, hasta 15 veces (unos 30 s), y lo dice. Una conexión de control que falla sin una sesión reciente (30 s) es un error de verdad y se muestra enseguida.
 - **Cuando termina**, dice por qué en español (`ck_ui_quit_reason_string()`), con el detalle del core debajo, y ofrece *Volver a intentar* o *Volver a la lista*. Al mandar la app al fondo cierra la sesión: iOS la detendría a los pocos segundos.
 - **Métricas**, desde el menú: una línea arriba con cuadros por segundo, tiempo de decodificación, bitrate, cuadros perdidos, audio y memoria, cada segundo.
-- **Video y audio** se conectan aquí cuando lleguen los de A3 (`CKVideoSink`, C2) y A4 (el reproductor, C3). Mientras, la pantalla queda negra y la imagen se ve en la tele.
+- **Audio** se conecta aquí cuando llegue el reproductor de A4 (C3). Mientras, el sonido sale de la tele.
 
 ## Consolas simuladas (A6.1)
 
@@ -130,17 +132,19 @@ ssh ipad ckctl forget -c <ID de la PS5 en ckctl list>
 
 Después, el agente corre `ssh ipad ckctl list`, que debe mostrar la PS5 registrada otra vez, con su IP. Si algo falló, regresa la copia con `ssh ipad mv /var/mobile/Library/Chiakiport/consoles.plist.bak /var/mobile/Library/Chiakiport/consoles.plist`.
 
-### Jugar con el DualSense (A6.5, sin video todavía)
+### Jugar (A6.5, sin audio todavía)
 
-Con la PS5 registrada, `com.thehuax.ckdirect` instalado y el DualSense conectado al iPad. La imagen se ve en la tele: el iPad todavía no muestra video.
+Con la PS5 registrada, `com.thehuax.ckdirect` instalado y el DualSense emparejado con el iPad. El sonido sale de la tele: el iPad todavía no lo reproduce.
 
-1. Con la PS5 encendida, toca **Jugar**: "Conectando con…" y en 2 o 3 s se quita el texto. La PS5 muestra que se conectó un dispositivo de Remote Play.
-2. Mueve los sticks y aprieta botones: la PS5 responde en la tele. Apaga el DualSense (mantén PS 10 s): en un segundo la pantalla dice que no ve el DualSense; enciéndelo y se quita.
-3. Toca con tres dedos y elige **Mostrar métricas**: arriba sale una línea que cambia cada segundo, con unos 30 fps.
-4. **Salir** y, enseguida, **Jugar** otra vez: debe decir que la consola está cerrando la sesión anterior, probar de nuevo y conectar en 10 a 20 s.
-5. Pon la PS5 en reposo desde su menú: la pantalla dice que la consola se apagó o entró en reposo, con *Volver a intentar* y *Volver a la lista*.
+1. Con el DualSense apagado y la PS5 encendida, toca **Jugar**: "Conectando con…" y en 2 o 3 s sale la imagen de la PS5 en el iPad, ajustada a la pantalla, con los controles táctiles encima.
+2. Navega el menú de la PS5 solo con la pantalla: cruceta, stick, ✕ y ○.
+3. Enciende el DualSense con el botón PS: en un segundo se quitan los controles táctiles. Abre un juego y juega un par de minutos: la imagen se mueve fluida y la PS5 responde al pad.
+4. Toca con tres dedos en el centro y elige **Mostrar métricas**: arriba sale una línea que cambia cada segundo, con unos 30 fps y pocos o ningún cuadro perdido. Toma una foto de esa línea.
+5. Apaga el DualSense (mantén PS 10 s): en un segundo vuelven los controles táctiles.
+6. **Salir** y, enseguida, **Jugar** otra vez: debe decir que la consola está cerrando la sesión anterior, probar de nuevo y conectar en 10 a 20 s, con imagen.
+7. Pon la PS5 en reposo desde su menú: la imagen se quita y la pantalla dice que la consola se apagó o entró en reposo, con *Volver a intentar* y *Volver a la lista*.
 
-Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
+Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal: sobre todo si la imagen se congela, se ve cortada o con bloques, o tarda en seguir al pad.
 
 ## Pruebas en Linux
 
