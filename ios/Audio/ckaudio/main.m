@@ -18,7 +18,9 @@
 #include <opus/opus.h>
 
 #include <mach/mach.h>
+#include <mach/mach_error.h>
 #include <mach/mach_time.h>
+#include <mach/task_policy.h>
 #include <mach/thread_policy.h>
 #include <pthread.h>
 #include <signal.h>
@@ -28,14 +30,17 @@
 #include <string.h>
 
 static const char usage[] =
-	"Uso: ckaudio tono [-o rio|aq] [-s SEGUNDOS] [-f HZ] [-d DBFS] [-b MS] [-n BÚFERES] [-i MS]\n"
-	"     ckaudio opus ARCHIVO.opus [-o rio|aq] [-s SEGUNDOS] [-j MS] [-p POR_CIENTO] [-b MS] [-n BÚFERES]\n"
+	"Uso: ckaudio tono [-o rio|aq] [-m frente|fondo] [-s SEGUNDOS] [-f HZ] [-d DBFS] [-b MS] [-n BÚFERES] [-i MS]\n"
+	"     ckaudio opus ARCHIVO.opus [-o rio|aq] [-m frente|fondo] [-s SEGUNDOS] [-j MS] [-p POR_CIENTO] [-b MS]\n"
+	"                  [-n BÚFERES]\n"
 	"\n"
 	"  tono: toca un tono de prueba por la bocina del iPad, como lo hará el\n"
 	"  reproductor de audio, y cada 10 s dice si la salida se quedó sin audio.\n"
 	"\n"
 	"  -o rio|aq    la salida: RemoteIO, en el hilo de tiempo real del audio (rio,\n"
 	"               la del reproductor), o AudioQueue (aq)\n"
+	"  -m frente|fondo  frente: pide a iOS el trato de una app al frente, como el\n"
+	"               de la app (frente); fondo: el de un proceso lanzado por SSH\n"
 	"  -s SEGUNDOS  cuánto suena (120)\n"
 	"  -f HZ        la frecuencia del tono (440)\n"
 	"  -d DBFS      el volumen, en dB bajo el máximo (-12; 0 es el máximo)\n"
@@ -52,6 +57,7 @@ static const char usage[] =
 	"  -j MS          cada cuadro llega tarde al azar de 0 a MS milisegundos (0)\n"
 	"  -p POR_CIENTO  cuadros que se pierden al azar, como en la red (0)\n"
 	"  -o rio|aq      la salida, como en tono (rio)\n"
+	"  -m frente|fondo  como en tono (frente)\n"
 	"  -b MS          con aq, lo que dura cada búfer de la cola, de 5 a 25 (20)\n"
 	"  -n BÚFERES     con aq, cuántos búferes tiene la cola (4)\n"
 	"\n"
@@ -214,10 +220,43 @@ static bool parse_kind(const char *text, CKAudioOutputKind *kind)
 	return true;
 }
 
+/** -m: frente or fondo. */
+static bool parse_mode(const char *text, bool *foreground)
+{
+	if(!strcmp(text, "frente"))
+		*foreground = true;
+	else if(!strcmp(text, "fondo"))
+		*foreground = false;
+	else
+		return false;
+	return true;
+}
+
+/**
+ * iOS treats a process started over SSH as a background one: its timers come
+ * late (LATENCY_QOS_LAUNCH_DEFAULT_TIER) and so does its audio. On 2026-10-27
+ * RemoteIO doubled its buffer after a few seconds and called back up to 16 ms
+ * late, heard as static, which the app in the foreground would not get. This
+ * asks for what SpringBoard gives the app: a foreground application's role
+ * and timers.
+ */
+static void act_as_foreground(void)
+{
+	task_category_policy_data_t category = { TASK_FOREGROUND_APPLICATION };
+	kern_return_t role = task_policy_set(mach_task_self(), TASK_CATEGORY_POLICY, (task_policy_t)&category,
+		TASK_CATEGORY_POLICY_COUNT);
+	struct task_qos_policy qos = { LATENCY_QOS_TIER_0, THROUGHPUT_QOS_TIER_0 };
+	kern_return_t timers = task_policy_set(mach_task_self(), TASK_BASE_QOS_POLICY, (task_policy_t)&qos,
+		TASK_QOS_POLICY_COUNT);
+	printf("  proceso como app al frente: papel %s, temporizadores %s\n",
+		role == KERN_SUCCESS ? "sí" : mach_error_string(role), timers == KERN_SUCCESS ? "sí" : mach_error_string(timers));
+}
+
 static int cmd_tone(int argc, char **argv)
 {
 	long seconds = 120, hz = 440, dbfs = -12, buffer_ms = 10, buffers = 3, io_ms = 10;
 	CKAudioOutputKind kind = CK_AUDIO_OUTPUT_REMOTEIO;
+	bool foreground = true;
 	for(int i = 1; i < argc; i++)
 	{
 		const char *arg = argv[i];
@@ -233,6 +272,11 @@ static int cmd_tone(int argc, char **argv)
 		{
 			if(!parse_kind(value, &kind))
 				return usage_error("-o pide rio o aq");
+		}
+		else if(!strcmp(arg, "-m"))
+		{
+			if(!parse_mode(value, &foreground))
+				return usage_error("-m pide frente o fondo");
 		}
 		else if(!strcmp(arg, "-s"))
 		{
@@ -273,6 +317,8 @@ static int cmd_tone(int argc, char **argv)
 	chiaki_log_init(&log, verbose && verbose[0] == '1' ? CHIAKI_LOG_ALL : CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING,
 		chiaki_log_cb_print, NULL);
 
+	if(foreground)
+		act_as_foreground();
 	if(!ck_audio_session_begin(&log, TONE_RATE, io_ms / 1000.0, on_session_event, NULL))
 	{
 		fprintf(stderr, "ckaudio: iOS no activó la sesión de audio\n");
@@ -320,6 +366,8 @@ static int cmd_tone(int argc, char **argv)
 	CFRunLoopTimerInvalidate(timer);
 	CFRelease(timer);
 
+	// iOS may have changed the hardware buffer while it played.
+	print_session(" al final");
 	ck_audio_output_free(output);
 	ck_audio_session_end();
 
@@ -510,6 +558,7 @@ static int cmd_opus(int argc, char **argv)
 	long seconds = 3600, jitter_ms = 0, loss = 0;
 	long buffer_ms = CK_AUDIO_PLAYER_OUTPUT_BUFFER_MS, buffers = CK_AUDIO_PLAYER_OUTPUT_BUFFERS;
 	CKAudioOutputKind kind = CK_AUDIO_PLAYER_OUTPUT;
+	bool foreground = true;
 	for(int i = 2; i < argc; i++)
 	{
 		const char *arg = argv[i];
@@ -520,6 +569,11 @@ static int cmd_opus(int argc, char **argv)
 		{
 			if(!parse_kind(value, &kind))
 				return usage_error("-o pide rio o aq");
+		}
+		else if(!strcmp(arg, "-m"))
+		{
+			if(!parse_mode(value, &foreground))
+				return usage_error("-m pide frente o fondo");
 		}
 		else if(!strcmp(arg, "-s"))
 		{
@@ -583,6 +637,8 @@ static int cmd_opus(int argc, char **argv)
 	ChiakiLog log;
 	chiaki_log_init(&log, verbose && verbose[0] == '1' ? CHIAKI_LOG_ALL : CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING,
 		chiaki_log_cb_print, NULL);
+	if(foreground)
+		act_as_foreground();
 	CKAudioPlayer *player = ck_audio_player_new_output(&log, kind, (uint32_t)buffer_ms, (uint32_t)buffers);
 	if(!player)
 	{
@@ -635,6 +691,7 @@ static int cmd_opus(int argc, char **argv)
 
 	atomic_store(&feed.stop, true);
 	pthread_join(thread, NULL);
+	print_session(" al final");
 	ck_audio_player_free(player);
 
 	uint32_t average = run.level_seconds ? (uint32_t)(run.level_sum / run.level_seconds) : 0;

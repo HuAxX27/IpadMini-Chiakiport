@@ -58,11 +58,13 @@ Con la captura real de la PS5 (60 s, un cuadro perdido): idéntica a ffmpeg con 
 El paquete `com.thehuax.ckaudio` instala `/usr/bin/ckaudio`. El CI lo arma en cada PR y lo publica en el pre-release `ipad-pr-N`; la laptop lo baja con `ios/toolchain/fetch-debs.ps1 -Pr N -Package ckaudio`.
 
 ```
-ckaudio tono [-o rio|aq] [-s SEGUNDOS] [-f HZ] [-d DBFS] [-b MS] [-n BÚFERES] [-i MS]
-ckaudio opus ARCHIVO.opus [-o rio|aq] [-s SEGUNDOS] [-j MS] [-p POR_CIENTO] [-b MS] [-n BÚFERES]
+ckaudio tono [-o rio|aq] [-m frente|fondo] [-s SEGUNDOS] [-f HZ] [-d DBFS] [-b MS] [-n BÚFERES] [-i MS]
+ckaudio opus ARCHIVO.opus [-o rio|aq] [-m frente|fondo] [-s SEGUNDOS] [-j MS] [-p POR_CIENTO] [-b MS] [-n BÚFERES]
 ```
 
 `tono` toca 440 Hz a -12 dBFS durante 120 s por la misma salida y la misma sesión de audio que usa el reproductor: RemoteIO, o AudioQueue con `-o aq` (`-b` y `-n` dan sus búferes). Cada 10 s imprime los búferes rellenados, el hueco máximo y los posibles cortes; al final, una línea `RESULTADO`. La prueba P2-5 son 2 minutos sin cortes, medidos y al oído, girando el iPad a los 30, 60 y 90 s.
+
+Lanzado por SSH, iOS trata a `ckaudio` como un proceso de fondo: sus temporizadores y su audio llegan tarde. El 2026-10-27, con RemoteIO, iOS duplicó el búfer de hardware a los pocos segundos (de 512 a 1024 cuadros) y llamó hasta 16 ms tarde, y se oyó estática; la app, al frente, no recibe ese trato. Por eso `ckaudio` le pide a iOS el papel y los temporizadores de una app al frente (`-m frente`, por omisión) y lo dice en la primera línea; `-m fondo` deja el trato de SSH, para comparar. Al final imprime otra vez la sesión de audio, por si iOS cambió el búfer de hardware.
 
 `opus` toca una grabación de `cksession -g` por el reproductor, como si llegara de la PS5: un hilo de tiempo real entrega un cuadro cada 10 ms, tarde al azar hasta `-j` ms y con `-p` por ciento de pérdida, y oculta los huecos como el core. Cada 10 s imprime el nivel del búfer, los cuadros ocultados, las veces que se vació y los posibles cortes de la salida.
 
