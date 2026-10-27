@@ -370,7 +370,8 @@ static CFTimeInterval CKLastSessionEnd = -1;
 		return;
 	char line[CK_UI_METRICS_LINE_SIZE];
 	ck_ui_metrics_line(&metrics, line, sizeof(line));
-	_metricsLabel.text = [NSString stringWithFormat:@"  %s", line];
+	// UTF-8 ("·"): through @(), not %s, which reads Mac Roman.
+	_metricsLabel.text = [@"  " stringByAppendingString:@(line)];
 }
 
 - (void)retryTapped
