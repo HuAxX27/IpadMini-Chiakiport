@@ -1,8 +1,8 @@
 Package: com.thehuax.ckaudio
 Name: ckaudio
-Version: 0.1.0
+Version: 0.2.0
 Architecture: iphoneos-arm
-Description: Prueba de audio de Chiakiport para el iPad mini 1 por SSH: ckaudio tono toca un tono por la bocina con AudioQueue, la misma salida que usará el reproductor, y dice si la cola se quedó sin audio.
+Description: Prueba de audio de Chiakiport para el iPad mini 1 por SSH: ckaudio tono toca un tono por la bocina con RemoteIO o AudioQueue y dice si la salida se quedó sin audio; ckaudio opus toca una grabación de cksession -g por el reproductor de la app, con jitter y pérdida si se pide.
 Maintainer: TheHuAx
 Author: TheHuAx
 Section: Utilities

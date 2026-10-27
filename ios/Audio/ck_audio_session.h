@@ -37,7 +37,7 @@ typedef void (*CKAudioSessionCallback)(CKAudioSessionEvent event, void *user);
 
 typedef struct ck_audio_session_info_t
 {
-	/** What the hardware runs at; AudioQueue converts 48 kHz to it. */
+	/** What the hardware runs at; the output converts 48 kHz to it. */
 	double sample_rate;
 	/** How much audio the hardware asks for at a time, in seconds. */
 	double io_buffer_s;
