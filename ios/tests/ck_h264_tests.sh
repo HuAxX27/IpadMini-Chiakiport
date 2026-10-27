@@ -4,14 +4,16 @@
 #
 #   1. Unit tests, with AddressSanitizer and UBSan when the compiler has them.
 #   2. The same tests built for armv7 (Cortex-A9 and a 32-bit size_t, like the
-#      iPad mini's A5) and run under qemu-arm.
+#      iPad mini's A5) and run under qemu-arm, also on every capture given.
 #   3. "check" on the x264 sample in ios/tests/data and on every capture given,
 #      such as the PS5 recording from A2.8.
 #   4. Our AVCC byte for byte against ffmpeg's: the committed reference for the
-#      sample, and a fresh 960x540 clip when ffmpeg has libx264.
+#      sample, every capture given, and a fresh 960x540 clip when ffmpeg has
+#      libx264.
 #
-# Steps 2 and the fresh clip need extra tools (apt install gcc-arm-linux-gnueabihf
-# qemu-user ffmpeg); without them they print SKIP. Any failure exits non-zero.
+# Steps 2, the captures against ffmpeg and the fresh clip need extra tools (apt
+# install gcc-arm-linux-gnueabihf qemu-user ffmpeg); without them they print
+# SKIP. Any failure exits non-zero.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -53,7 +55,7 @@ echo "== armv7 under qemu-arm"
 if command -v arm-linux-gnueabihf-gcc >/dev/null && command -v qemu-arm >/dev/null; then
 	arm-linux-gnueabihf-gcc "${CFLAGS[@]}" -O2 -mcpu=cortex-a9 -mfpu=neon -static "${SRC[@]}" -o "$BUILD/ck_h264_tests_armv7"
 	qemu-arm -cpu cortex-a9 "$BUILD/ck_h264_tests_armv7"
-	qemu-arm -cpu cortex-a9 "$BUILD/ck_h264_tests_armv7" check "$SAMPLE"
+	qemu-arm -cpu cortex-a9 "$BUILD/ck_h264_tests_armv7" check "$SAMPLE" "$@"
 else
 	echo "SKIP: needs arm-linux-gnueabihf-gcc and qemu-arm"
 fi
@@ -65,6 +67,16 @@ echo "== against ffmpeg"
 "$BUILD/ck_h264_tests" avcc "$SAMPLE" "$BUILD/sample.avcc"
 cmp "$BUILD/sample.avcc" "$DATA/x264_320x180.ffmpeg.avcc"
 echo "sample: same AVCC as the committed ffmpeg reference"
+if command -v ffmpeg >/dev/null; then
+	for capture in "$@"; do
+		ffmpeg_avcc "$capture" "$BUILD/capture.ffmpeg.avcc"
+		"$BUILD/ck_h264_tests" avcc "$capture" "$BUILD/capture.avcc"
+		cmp "$BUILD/capture.avcc" "$BUILD/capture.ffmpeg.avcc"
+		echo "$capture: same AVCC as ffmpeg"
+	done
+elif [ "$#" -gt 0 ]; then
+	echo "SKIP: comparing the captures needs ffmpeg"
+fi
 encoders="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
 if [[ "$encoders" == *libx264* ]]; then
 	make_clip 960x540 90 2M "$BUILD/clip540.h264"

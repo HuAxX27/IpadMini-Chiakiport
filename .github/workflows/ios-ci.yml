@@ -11,6 +11,11 @@
 #   - linux-tests: the port's portable C tests on Linux, on x86_64 and as
 #     32-bit ARM under qemu-arm: the contracts, the core (ios/tests/core),
 #     H.264 (A3) and input (A5: the DualSense parser and the BTServer filter).
+#   - publish: puts the .debs of "ipad" in a public pre-release, ipad-main for
+#     main and ipad-pr-<N> for PR N (ios/toolchain/publish-debs.sh), which a PC
+#     downloads without signing in to GitHub, as artifacts need
+#     (ios/toolchain/fetch-debs.ps1). ios-debs-cleanup.yml deletes a PR's
+#     pre-release when the PR closes.
 #
 # ios-quality.yml adds secrets, private data, static analysis and lint.
 #
@@ -94,3 +99,40 @@ jobs:
 
       - name: Core with OpenSSL, mbedTLS and armv7 mbedTLS (A2)
         run: ios/tests/core/run.sh
+
+  # ---------------------------------------------------------------------------
+  # Job 3: the .debs as a public pre-release
+  # Only main and PRs from this repo: a fork's token cannot write releases.
+  # One run at a time per pre-release; a run whose commit is no longer the
+  # latest of main or of the PR publishes nothing (publish-debs.sh).
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish the .debs (pre-release)
+    needs: ipad
+    if: >-
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: ipad-debs-${{ github.event.pull_request.number || 'main' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download the .deb packages
+        uses: actions/download-artifact@v4
+        with:
+          name: ipad-debs
+          path: ${{ runner.temp }}/debs
+
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.event.pull_request.number || 'main' }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ios/toolchain/publish-debs.sh "$SOURCE" "$COMMIT" "$RUNNER_TEMP/debs"

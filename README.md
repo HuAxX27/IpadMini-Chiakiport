@@ -50,6 +50,7 @@ El trabajo lo hacen agentes de [Claude Code](https://claude.com/claude-code) en 
 
 - [docs/ipad/README.md](docs/ipad/README.md): agentes, oleadas, actividades y puntos de control.
 - [docs/ipad/contracts.md](docs/ipad/contracts.md): los contratos C1 a C5 entre módulos.
+- [docs/ipad/guia-de-pruebas.md](docs/ipad/guia-de-pruebas.md): cómo instalar cada `.deb` en el iPad, qué medir y cómo reportar.
 - [CLAUDE.md](CLAUDE.md): las reglas para los agentes.
 
 ## Mapa del repo

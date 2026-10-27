@@ -1,0 +1,9 @@
+Package: com.thehuax.ckcontrol
+Name: CK Control
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Prueba de Chiakiport para el control (A5.4 y A5.5): controles táctiles en pantalla y DualSense directo con su mapeo, solos o en una sesión con la PS5 sin imagen.
+Maintainer: TheHuAx
+Author: TheHuAx
+Section: Utilities
+Depends: firmware (>= 9.0)

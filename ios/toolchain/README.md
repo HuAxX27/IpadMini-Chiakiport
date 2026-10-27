@@ -22,6 +22,8 @@ Cada pieza está fijada en `versions.env`, con su commit o su sha256, y `install
 | `ci-ipad.sh` | Lo que el CI compila para el iPad en cada PR: contratos, core y paquetes `.deb` |
 | `apt-linux-tests.sh` | Instala en Ubuntu 24.04 lo que piden las pruebas en Linux, también para armhf |
 | `deploy.ps1`, `deploy.sh` | Instalan `.deb` en el iPad por SSH, desde Windows o desde Linux |
+| `fetch-debs.ps1` | Baja los `.deb` de `main` o de un PR sin iniciar sesión en GitHub y los instala con `deploy.ps1` |
+| `publish-debs.sh` | Lo que corre el CI para publicar esos `.deb` como pre-release |
 
 ## Con Docker (recomendado)
 
@@ -112,9 +114,39 @@ docker run --rm -v "$PWD":/work -w /work/ios/toolchain/hello ck-ios-toolchain ma
 
 El CI la compila en cada PR y deja el `.deb` en el artefacto `ipad-debs` (`ios-ci.yml`); `ios-toolchain.yml` también lo guarda como `ckhola-deb` cuando cambia esta carpeta.
 
-Para instalarla en el iPad, sigue [Instalar en el iPad](#instalar-en-el-ipad).
+Para instalarla en el iPad, sigue [Bajar e instalar lo del CI](#bajar-e-instalar-lo-del-ci) o [Instalar en el iPad](#instalar-en-el-ipad).
 
 Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP /Applications/CKHola.app/CKHola` y guarda lo que imprima; `Killed: 9` apunta a la firma. Para quitarla: `ssh -o HostKeyAlgorithms=+ssh-rsa root@IP "cd /tmp && dpkg -r com.thehuax.ckhola && su mobile -c uicache"`.
+
+## Bajar e instalar lo del CI
+
+El CI publica los `.deb` de cada build como un pre-release público, que se baja sin iniciar sesión en GitHub: `ipad-main` con lo último de `main` e `ipad-pr-<N>` con lo último del PR N. Cada corrida lo reemplaza, y el de un PR se borra al cerrarlo. Están en [Releases](https://github.com/HuAxX27/IpadMini-Chiakiport/releases).
+
+`fetch-debs.ps1` los baja y los instala en el iPad con `deploy.ps1`, sin preguntar nada. Es lo que usan las sesiones de los agentes en la laptop de TheHuAx. Desde la copia del repo, en PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1 -Pr 93                       # todos los .deb del PR 93
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1 -Pr 93 -Package chiakiport   # solo com.thehuax.chiakiport
+powershell -ExecutionPolicy Bypass -File ios\toolchain\fetch-debs.ps1                              # lo último de main
+```
+
+- **`-Pr N`** toma el build del PR N; sin él, el de `main`.
+- **`-Package`** deja solo los `.deb` cuyo nombre contiene ese texto, como `chiakiport`, `ckctl` o `ckdirect`. Acepta varios: `-Package ckctl, ckdirect`.
+- **Solo instala el build del último commit.** Si el CI de ese commit todavía corre (el build del iPad y su publicación tardan unos 3 minutos) o falló, se detiene y lo dice. `-AllowStale` instala el build anterior.
+- **`-Ip`** es la IP o el alias de SSH del iPad, por defecto `ipad`.
+- **`-NoDeploy`** solo baja e imprime dónde dejó los `.deb`. Por defecto van a `%TEMP%\ck-debs\<pre-release>`, que se vacía en cada corrida; `-OutDir` elige otra carpeta.
+- Revisa el tamaño de cada `.deb`, y su sha256 cuando GitHub lo lista.
+- Llama a `deploy.ps1` con `-BatchMode`: SSH nunca pide contraseña y se rinde a los 15 segundos si el iPad no contesta, así una sesión sin nadie al teclado no se queda esperando. El iPad necesita la llave de la PC; en una PC nueva, corre una vez `deploy.ps1 -Ip <IP> -SetupKey`, que con una carpeta sin `.deb` solo agrega la llave.
+- La API de GitHub sin sesión da 60 consultas por hora por IP, y cada corrida usa tres.
+- Un PR que viene de un fork no tiene pre-release. Para esos, el script baja el artefacto `ipad-debs` con [`gh`](https://cli.github.com), que pide `gh auth login` una vez.
+
+Desde Linux, sin script, lo mismo es:
+
+```sh
+curl -sS https://api.github.com/repos/HuAxX27/IpadMini-Chiakiport/releases/tags/ipad-pr-93 \
+  | grep -o 'https://github.com/[^"]*\.deb' | xargs -n1 curl -sSLO
+ios/toolchain/deploy.sh 192.168.0.123 .
+```
 
 ## Instalar en el iPad
 
@@ -123,13 +155,13 @@ Si el ícono aparece pero la app se cierra al abrirla, corre `ssh -o HostKeyAlgo
 1. Si el iPad se reinició, vuelve a correr Carbon en Safari y revisa que Cydia abra. Sin jailbreak activo no hay SSH.
 2. Busca la IP del iPad en Ajustes → Wi-Fi → (i) junto a tu red.
 
-Desde PowerShell en Windows, en la carpeta con los `.deb` (por ejemplo, el `ipad-debs` de un PR, ya descomprimido), con la ruta de tu copia del repo:
+Desde PowerShell en Windows, en la carpeta con los `.deb` (por ejemplo, los que bajó `fetch-debs.ps1 -NoDeploy`), con la ruta de tu copia del repo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\ruta\al\repo\ios\toolchain\deploy.ps1 -Ip 192.168.0.123
 ```
 
-Pide la contraseña de root dos veces, una para copiar y otra para instalar. Con `-SetupKey` crea una llave SSH en la PC si no hay (presiona Enter dos veces cuando pida la frase) y la agrega al iPad, y desde la siguiente vez ya no pide contraseña. `-Path` elige otros `.deb` o carpetas, y `-Port` y `-User` cambian el puerto y el usuario.
+Pide la contraseña de root dos veces, una para copiar y otra para instalar. Con `-SetupKey` crea una llave SSH en la PC si no hay (presiona Enter dos veces cuando pida la frase) y la agrega al iPad, y desde la siguiente vez ya no pide contraseña. Con `-BatchMode` nunca pregunta nada: falla en vez de pedir la contraseña y se rinde a los 15 segundos si el iPad no contesta. `-Path` elige otros `.deb` o carpetas, y `-Port` y `-User` cambian el puerto y el usuario.
 
 Desde Linux, en la raíz del repo:
 
@@ -169,11 +201,12 @@ Cambia la URL o el commit en `versions.env` junto con su sha256 (`sha256sum arch
   4. empaqueta como `.deb` cada proyecto de Theos que haya bajo `ios/`, es decir, cada carpeta con un `Makefile` y un archivo `control`. Hoy son CK Hola y `ckdirect`; la app y `ckctl` entran solos cuando tengan su `control`. Theos compila con `-Wall -Werror` y cada paquete recibe además `-Werror=unguarded-availability`, así que una API posterior a iOS 9.0 sin `@available` rompe el build aunque su `Makefile` no lo pida.
 
   Deja dos artefactos: **`ipad-debs`**, los `.deb` para instalar en el iPad, e **`ios-libs-armv7`**, las librerías estáticas para armv7 (core, nanopb, jerasure, gf-complete, mbedTLS y Opus) con los headers de mbedTLS y Opus y las licencias.
+- **`Publish the .debs`** publica los `.deb` del job anterior como pre-release público con `publish-debs.sh`: `ipad-main` en cada push a `main` e `ipad-pr-<N>` en cada push a un PR de este repo (los de un fork no pueden escribir releases). Mueve el tag al commit que armó, sube sus `.deb` y quita los que ya no armó, como el de una versión anterior. Si mientras tanto llegó un commit más nuevo a `main` o al PR, o el PR se cerró, no publica nada, y los pre-releases de un mismo PR se publican de uno en uno. Al cerrar un PR, `ios-debs-cleanup.yml` borra su pre-release y su tag.
 - **`Linux tests`** instala lo necesario con `apt-linux-tests.sh` y corre, cada una en su paso, las pruebas en C del port: los contratos, la entrada (A5: el parser del DualSense y el filtro de BTServer, con `ios/tests/input_tests.sh`, también en armv7 bajo `qemu-arm`), H.264 (A3, también en armv7 bajo `qemu-arm`) y el core (A2: OpenSSL, mbedTLS y mbedTLS en armv7 bajo `qemu-arm`, más las pruebas heredadas de VitaRPS5).
 
 Lo mismo corre en un Linux sin CI: `THEOS=... ios/toolchain/ci-ipad.sh` deja todo en `build-ios-ci/`, y `sudo ios/toolchain/apt-linux-tests.sh` prepara un Ubuntu 24.04 para las pruebas.
 
-Para bajar el `.deb` de un PR: en la pestaña **Checks** del PR, abre **iOS CI**, baja hasta **Artifacts** y descarga `ipad-debs`. Llega como `.zip` con el `.deb` adentro. GitHub pide haber iniciado sesión para descargarlo.
+Para bajar el `.deb` de un PR sin iniciar sesión: el pre-release `ipad-pr-<N>` o `fetch-debs.ps1 -Pr <N>` ([Bajar e instalar lo del CI](#bajar-e-instalar-lo-del-ci)). El artefacto `ipad-debs` sigue en la pestaña **Checks** del PR (**iOS CI** > **Artifacts**), como `.zip`, pero GitHub pide haber iniciado sesión para descargarlo.
 
 `ios-toolchain.yml` sigue revisando la imagen de Docker y el script de instalación cuando cambia esta carpeta.
 
