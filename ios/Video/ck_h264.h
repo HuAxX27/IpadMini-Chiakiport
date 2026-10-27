@@ -95,6 +95,17 @@ typedef struct ck_h264_frame_info_t
 bool ck_h264_annexb_next_nal(const uint8_t *buf, size_t size, size_t *pos, const uint8_t **nal, size_t *nal_size);
 
 /**
+ * Finds the next access unit (one frame, with the SPS, PPS or SEI before it)
+ * of an Annex B stream, such as a capture from A2.8, starting at *pos (0 on
+ * the first call). Sets *au and *au_size to it, moves *pos to the next one
+ * and returns true, or returns false when no NAL unit is left. A new access
+ * unit starts at an AUD, SEI, SPS or PPS, or at a slice with
+ * first_mb_in_slice 0, once the current one has a slice: H.264 7.4.1.2.3,
+ * enough for streams without slices out of order.
+ */
+bool ck_h264_next_access_unit(const uint8_t *buf, size_t size, size_t *pos, const uint8_t **au, size_t *au_size);
+
+/**
  * Upper bound of the AVCC size of any Annex B buffer of annexb_size bytes,
  * for sizing the output once instead of per frame. Each NAL unit has a start
  * code of at least 3 bytes and grows by at most one byte, so the bound is

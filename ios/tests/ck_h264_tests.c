@@ -477,6 +477,46 @@ static size_t make_nal(uint8_t *out, size_t payload_size)
 	return n;
 }
 
+static void test_access_units(void)
+{
+	// SPS, PPS and a two-slice IDR frame; a P frame; an AUD and a P frame of
+	// two slices, the second with first_mb_in_slice 1 (0x40: ue(v) "010").
+	static const uint8_t stream[] = {
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x4d, 0x40, 0x20,
+		0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0x80,
+		0x00, 0x00, 0x01, 0x65, 0x88, 0x11,
+		0x00, 0x00, 0x01, 0x65, 0x40, 0x22,
+		0x00, 0x00, 0x01, 0x41, 0x9a, 0x33,
+		0x00, 0x00, 0x01, 0x09, 0x10,
+		0x00, 0x00, 0x01, 0x41, 0x9a, 0x44,
+		0x00, 0x00, 0x01, 0x41, 0x40, 0x55};
+	static const size_t expected[][2] = { { 0, 27 }, { 27, 6 }, { 33, 17 } };
+	size_t pos = 0;
+	const uint8_t *au = NULL;
+	size_t au_size = 0;
+	for(size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+	{
+		CHECK(ck_h264_next_access_unit(stream, sizeof(stream), &pos, &au, &au_size));
+		CHECK(au == stream + expected[i][0] && au_size == expected[i][1]);
+	}
+	CHECK(!ck_h264_next_access_unit(stream, sizeof(stream), &pos, &au, &au_size));
+	CHECK(pos == sizeof(stream));
+
+	// Only the SPS and PPS, as the core sends them first: one access unit.
+	pos = 0;
+	CHECK(ck_h264_next_access_unit(PS5_HEADER, sizeof(PS5_HEADER), &pos, &au, &au_size));
+	CHECK(au == PS5_HEADER && au_size == sizeof(PS5_HEADER));
+	CHECK(!ck_h264_next_access_unit(PS5_HEADER, sizeof(PS5_HEADER), &pos, &au, &au_size));
+
+	// No start code, or nothing at all.
+	static const uint8_t junk[] = { 0x12, 0x34, 0x00, 0x00, 0x02 };
+	pos = 0;
+	CHECK(!ck_h264_next_access_unit(junk, sizeof(junk), &pos, &au, &au_size));
+	pos = 0;
+	CHECK(!ck_h264_next_access_unit(junk, 0, &pos, &au, &au_size));
+	CHECK(!ck_h264_next_access_unit(NULL, 4, &pos, &au, &au_size));
+}
+
 static void test_random_streams_round_trip(void)
 {
 	enum { ROUNDS = 3000, MAX_UNITS = 12 };
@@ -665,7 +705,7 @@ static int check_capture(const char *path)
 	//    slices before the store is ready.
 	CKH264ParamStore store;
 	ck_h264_param_store_reset(&store);
-	size_t access_units = 0, idr_units = 0, param_changes = 0, largest = 0, au_start = 0;
+	size_t access_units = 0, idr_units = 0, param_changes = 0, largest = 0, au_start = 0, api_pos = 0;
 	bool au_has_slice = false;
 	double seconds = 0;
 	for(size_t i = 0; i <= reference.count; i++)
@@ -683,6 +723,13 @@ static int check_capture(const char *path)
 		size_t au_size = au_end - au_start;
 		au_start = au_end;
 		au_has_slice = !end && (TYPE_BIT(CK_H264_NAL_TYPE(reference.nal[i].data[0])) & SLICE_BITS);
+
+		// ck_h264_next_access_unit(), which the CK Video app replays captures
+		// with, must split the same way.
+		const uint8_t *api_au = NULL;
+		size_t api_au_size = 0;
+		CHECK(ck_h264_next_access_unit(buf, size, &api_pos, &api_au, &api_au_size));
+		CHECK(api_au == au && api_au_size == au_size);
 
 		clock_t t0 = clock();
 		CKH264Result r = ck_h264_annexb_to_avcc(au, au_size, CK_H264_DROP_FOR_VIDEOTOOLBOX, avcc, capacity, &info);
@@ -703,6 +750,10 @@ static int check_capture(const char *path)
 				largest = au_size;
 		}
 	}
+
+	const uint8_t *api_au = NULL;
+	size_t api_au_size = 0;
+	CHECK(!ck_h264_next_access_unit(buf, size, &api_pos, &api_au, &api_au_size));
 
 	printf("%s: %zu bytes, %zu NAL units (", path, size, reference.count);
 	const char *sep = "";
@@ -787,6 +838,7 @@ int main(int argc, char **argv)
 	test_input_too_large();
 	test_frame_for_videotoolbox();
 	test_param_store();
+	test_access_units();
 	test_random_streams_round_trip();
 	test_random_bytes_against_reference();
 
