@@ -35,4 +35,4 @@ Cada oleada empieza solo cuando TheHuAx aprueba el punto de control anterior en 
 | 3 Integración | A2.6–A2.8, A3.2–A3.5, A4.1, A4.3–A4.4, A5.4, A6.2–A6.3, A6.5, A7.2 | P3: primer cuadro; P4: sesión jugable de 10 minutos |
 | 4 Afinación | A0.6, A5.6, A6.6, A7.3–A7.6 | P5: versión 1.0, 30 minutos estables |
 
-Cada actividad tiene un issue en GitHub con su dependencia, su criterio de terminado y su tamaño.
+Cada actividad tiene un issue en GitHub con su dependencia, su criterio de terminado y su tamaño. Cómo instalar y probar en el iPad cada `.deb`, qué medir y cómo reportar: [`guia-de-pruebas.md`](guia-de-pruebas.md).

@@ -86,11 +86,12 @@ La instalación y lo que se corre por SSH lo hace un agente desde la laptop (`io
 5. **Despertar** en *PS5 de la oficina*: sale "Despertando…" y a los 45 s un aviso de que no se encendió.
 6. **Registrar** en *PS5-517*: escribe `1` como Account ID y `00000000` como PIN: debe decir que la consola rechazó el PIN y borrar el PIN. Escribe otras 8 cifras: debe decir "Registro listo." y volver a la lista, donde *PS5-517* ya tiene **Jugar**.
 7. **Jugar** en *PS5 de la sala*: pantalla negra con el nombre y "Toca con tres dedos para salir". Espera un minuto: la pantalla no debe oscurecerse. Toca con tres dedos y elige **Salir**: vuelve a la lista.
-8. **Ajustes**: elige 720p, 60 y 10. Debajo de la lista debe decir `Ajustes: 720p · 60 fps · 10 Mbps`.
-9. Cierra la app desde el multitarea (doble clic al botón de inicio y desliza la app hacia arriba) y ábrela otra vez: los ajustes siguen en 720p, 60 y 10.
+
+8. **Ajustes**: elige 720p, 60 y 8. Debajo de la lista debe decir `Ajustes: 720p · 60 fps · 8 Mbps`, sin "(automático)". No uses 10: a 720p es también el bitrate automático y no se distingue de *Auto*.
+9. Cierra la app desde el multitarea (doble clic al botón de inicio y arrastra la tarjeta de la app hacia arriba hasta que desaparezca; solo salir al inicio no la cierra) y ábrela otra vez: los ajustes siguen en 720p, 60 y 8.
 10. Reinicia el iPad, vuelve a correr Carbon y abre la app: siguen igual. Al final, *Volver a los valores por defecto* deja 540p, 30 y Auto.
 
-Desde la laptop, `ssh ipad cat /var/mobile/Library/Chiakiport/settings.plist` muestra lo que quedó guardado.
+Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal. Desde la laptop, `ssh ipad cat /var/mobile/Library/Chiakiport/settings.plist` muestra lo que quedó guardado (`bitrate_kbps` 8000 tras el paso 8; 0 es *Auto*). Que la app arrancara después de esa escritura (la hora de inicio del proceso en `ps`) dice que el paso 9 sí la cerró.
 
 ### Con la PS5 (A6.2)
 

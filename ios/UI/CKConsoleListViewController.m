@@ -144,7 +144,8 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	CKSettings settings = _settings.settings;
 	char summary[96];
 	ck_ui_settings_summary(&settings, summary, sizeof(summary));
-	[lines addObject:[NSString stringWithFormat:@"Ajustes: %s", summary]];
+	// UTF-8 ("·", "á"): %s would read it as Mac Roman and show "¬∑".
+	[lines addObject:[NSString stringWithFormat:@"Ajustes: %@", @(summary)]];
 	[lines addObject:[NSString stringWithFormat:@"Chiakiport %@ (%s)", info[@"CFBundleShortVersionString"], CK_GIT_COMMIT]];
 	_footerLabel.text = [lines componentsJoinedByString:@"\n"];
 	[self resizeFooter];
