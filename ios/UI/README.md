@@ -25,7 +25,7 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 
 - **Consolas.** Una fila por consola encontrada y una por consola registrada que no contestó. Primero las registradas, luego por nombre, así las filas no brincan mientras la lista se refresca. Cada fila dice si es PS5 o PS4, su estado en color (encendida, en reposo, no contesta), su IP y el juego abierto, y tiene un botón con lo que hace un toque:
   - **Jugar**, registrada y encendida: abre la pantalla de juego.
-  - **Despertar**, registrada y en reposo, o que no contesta pero tiene una IP guardada: manda la señal y muestra "Despertando…" hasta que la consola contesta encendida, o avisa a los 45 s si no se encendió.
+  - **Despertar**, registrada y en reposo, o que no contesta pero tiene una IP guardada: manda la señal y muestra "Despertando…" hasta que la consola contesta encendida, o avisa a los 45 s si no se encendió. Una consola apagada del todo no escucha la red, así que solo se despierta desde el reposo; el aviso lo dice.
   - **Registrar**, encendida y sin registrar: abre el registro.
   - Sin botón: una consola sin registrar en reposo (hay que encenderla para registrarla) o una registrada sin IP conocida. Un toque explica qué hacer.
 - **Registrar.** El Account ID de PSN (en base64, 12 caracteres que terminan en `=`, o en decimal) y el PIN de 8 cifras que muestra la PS5 en *Ajustes › Sistema › Remote Play › Vincular dispositivo*. Antes de mandar nada revisa que los dos se puedan leer. Si la consola dice que no, muestra qué corregir (`ck_regist_result_string()`), y con un PIN equivocado borra el campo para escribir otro. Al terminar regresa a la lista.
@@ -108,7 +108,7 @@ Con la PS5 ya registrada con `ckctl regist` y en la misma red. Antes, el agente 
 Antes, el agente guarda una copia del registro y quita la PS5 para que la app la vea sin registrar:
 
 ```sh
-ssh ipad cp /var/mobile/Library/Chiakiport/consoles.plist /var/mobile/Library/Chiakiport/consoles.plist.bak
+ssh ipad cp -p /var/mobile/Library/Chiakiport/consoles.plist /var/mobile/Library/Chiakiport/consoles.plist.bak
 ssh ipad ckctl forget -c <ID de la PS5 en ckctl list>
 ```
 
