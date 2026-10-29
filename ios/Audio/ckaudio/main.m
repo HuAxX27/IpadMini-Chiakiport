@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/event.h>
+#include <unistd.h>
 
 static const char usage[] =
 	"Uso: ckaudio tono [-o rio|aq] [-m frente|fondo] [-s SEGUNDOS] [-f HZ] [-d DBFS] [-b MS] [-n BÚFERES] [-i MS]\n"
@@ -237,19 +239,16 @@ static bool parse_mode(const char *text, bool *foreground)
  * late (LATENCY_QOS_LAUNCH_DEFAULT_TIER) and so does its audio. On 2026-10-27
  * RemoteIO doubled its buffer after a few seconds and called back up to 16 ms
  * late, heard as static, which the app in the foreground would not get. This
- * asks for what SpringBoard gives the app: a foreground application's role
- * and timers.
+ * asks for a foreground application's timers, which kept the buffer at 512
+ * frames; its role, which SpringBoard gives the app, iOS lets no process set
+ * for itself (KERN_INVALID_ARGUMENT, 2026-10-27).
  */
 static void act_as_foreground(void)
 {
-	task_category_policy_data_t category = { TASK_FOREGROUND_APPLICATION };
-	kern_return_t role = task_policy_set(mach_task_self(), TASK_CATEGORY_POLICY, (task_policy_t)&category,
-		TASK_CATEGORY_POLICY_COUNT);
 	struct task_qos_policy qos = { LATENCY_QOS_TIER_0, THROUGHPUT_QOS_TIER_0 };
 	kern_return_t timers = task_policy_set(mach_task_self(), TASK_BASE_QOS_POLICY, (task_policy_t)&qos,
 		TASK_QOS_POLICY_COUNT);
-	printf("  proceso como app al frente: papel %s, temporizadores %s\n",
-		role == KERN_SUCCESS ? "sí" : mach_error_string(role), timers == KERN_SUCCESS ? "sí" : mach_error_string(timers));
+	printf("  temporizadores de app al frente: %s\n", timers == KERN_SUCCESS ? "sí" : mach_error_string(timers));
 }
 
 static int cmd_tone(int argc, char **argv)
@@ -396,6 +395,8 @@ typedef struct opus_feed_t
 	double loss;
 	uint32_t seed;
 	bool realtime;
+	/** The latest the thread woke after a frame was due, in µs. */
+	atomic_uint max_wake_late_us;
 	atomic_bool stop;
 	atomic_bool done;
 	atomic_uint frames;
@@ -411,9 +412,12 @@ static double feed_random(OpusFeed *feed)
 /**
  * The feeder sleeps until each frame is due. A process started over SSH has
  * its timers held back by up to 100 ms (docs/ipad/dualsense-directo.md, T9),
- * which would hand the frames over in bursts no network makes; a
- * time-constraint thread is exempt. The core's own thread waits on its
- * socket, not on a timer, and needs none of this.
+ * which would hand the frames over in bursts no network makes. On 2026-10-27
+ * mach_wait_until() on a time-constraint thread, with the timers of
+ * act_as_foreground(), still did: the buffer went from empty to 110 ms eight
+ * times a second. So the thread is time-constraint and waits on a critical
+ * kevent timer, which iOS barely coalesces (wait_until). The core's own thread
+ * waits on its socket, not on a timer, and needs none of this.
  */
 static bool make_realtime(void)
 {
@@ -429,10 +433,26 @@ static bool make_realtime(void)
 		(thread_policy_t)&policy, THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS;
 }
 
+/** Sleeps until due, in mach ticks, on kq's critical timer; mach_wait_until() without kq. */
+static void wait_until(int kq, uint64_t due, const mach_timebase_info_data_t *timebase)
+{
+	uint64_t now = mach_absolute_time();
+	if(due <= now)
+		return;
+	uint64_t ns = (due - now) * timebase->numer / timebase->denom;
+	struct kevent change, event;
+	// data is an intptr_t, 32 bits on the iPad: a wait over a second is cut to one, and the loop waits again.
+	EV_SET(&change, 1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_NSECONDS | NOTE_CRITICAL,
+		(intptr_t)(ns < 1000000000u ? ns : 1000000000u), NULL);
+	if(kq < 0 || kevent(kq, &change, 1, &event, 1, NULL) < 0)
+		mach_wait_until(due);
+}
+
 static void *feed_thread(void *user)
 {
 	OpusFeed *feed = user;
 	feed->realtime = make_realtime();
+	int kq = kqueue();
 	mach_timebase_info_data_t timebase;
 	mach_timebase_info(&timebase);
 	double ticks_per_ms = 1e6 * timebase.denom / timebase.numer;
@@ -455,7 +475,11 @@ static void *feed_thread(void *user)
 			missing++;
 			continue;
 		}
-		mach_wait_until(due);
+		while(mach_absolute_time() < due)
+			wait_until(kq, due, &timebase);
+		uint32_t late_us = (uint32_t)((mach_absolute_time() - due) * timebase.numer / timebase.denom / 1000);
+		if(late_us > atomic_load(&feed->max_wake_late_us))
+			atomic_store(&feed->max_wake_late_us, late_us);
 		// As the core does: one lost frame per missing one, five at most, then the frame.
 		for(uint32_t m = 0; m < missing && m < CHIAKI_AUDIO_RECEIVER_CONCEAL_MAX_FRAMES; m++)
 		{
@@ -466,6 +490,8 @@ static void *feed_thread(void *user)
 		feed->sink.frame_cb((uint8_t *)packet, size, feed->sink.user);
 		atomic_fetch_add(&feed->frames, 1);
 	}
+	if(kq >= 0)
+		close(kq);
 	atomic_store(&feed->done, true);
 	return NULL;
 }
@@ -657,6 +683,7 @@ static int cmd_opus(int argc, char **argv)
 	atomic_init(&feed.done, false);
 	atomic_init(&feed.frames, 0);
 	atomic_init(&feed.lost, 0);
+	atomic_init(&feed.max_wake_late_us, 0);
 	char out[64];
 	if(kind == CK_AUDIO_OUTPUT_REMOTEIO)
 		snprintf(out, sizeof(out), "salida RemoteIO");
@@ -696,9 +723,11 @@ static int cmd_opus(int argc, char **argv)
 
 	uint32_t average = run.level_seconds ? (uint32_t)(run.level_sum / run.level_seconds) : 0;
 	printf("\n  sonó %ld s: %u cuadros, %u perdidos y ocultados, %u veces sin audio, %u descartados y %u inventados "
-		"por el reloj, %u posibles cortes de la salida, búfer de %u a %u ms (promedio %u); hilo de entrada en tiempo real: %s\n",
+		"por el reloj, %u posibles cortes de la salida, búfer de %u a %u ms (promedio %u); hilo de entrada en tiempo real: %s, "
+		"despertó hasta %.1f ms tarde\n",
 		run.elapsed, atomic_load(&feed.frames), run.concealed, run.underruns, run.dropped, run.made_up, run.late,
-		run.level_min_ms == UINT32_MAX ? 0 : run.level_min_ms, run.level_max_ms, average, feed.realtime ? "sí" : "no");
+		run.level_min_ms == UINT32_MAX ? 0 : run.level_min_ms, run.level_max_ms, average, feed.realtime ? "sí" : "no",
+		atomic_load(&feed.max_wake_late_us) / 1000.0);
 	bool ok = run.underruns == 0 && run.late == 0 && run.resets == 0;
 	if(ok)
 		printf("RESULTADO: sin cortes medidos. Falta tu oído: ¿se oyó limpio, sin chasquidos ni huecos?\n");
