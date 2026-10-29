@@ -144,7 +144,8 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	CKSettings settings = _settings.settings;
 	char summary[96];
 	ck_ui_settings_summary(&settings, summary, sizeof(summary));
-	[lines addObject:[NSString stringWithFormat:@"Ajustes: %s", summary]];
+	// UTF-8 ("·", "á"): %s would read it as Mac Roman and show "¬∑".
+	[lines addObject:[NSString stringWithFormat:@"Ajustes: %@", @(summary)]];
 	[lines addObject:[NSString stringWithFormat:@"Chiakiport %@ (%s)", info[@"CFBundleShortVersionString"], CK_GIT_COMMIT]];
 	_footerLabel.text = [lines componentsJoinedByString:@"\n"];
 	[self resizeFooter];
@@ -291,7 +292,9 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	for(NSString *hostID in [_waking allKeys])
 		if(-[_waking[hostID] timeIntervalSinceNow] > CKWakeTimeout)
 			[self wakeOf:hostID failedWithMessage:[NSString stringWithFormat:@"Pasaron %.0f s y sigue sin encenderse. "
-				@"Revisa que esté conectada a la corriente y a la misma red Wi-Fi.", CKWakeTimeout]];
+				@"Solo se despierta desde el reposo (luz naranja): si la apagaste del todo, enciéndela con su botón o con "
+				@"el botón PS del control. Si estaba en reposo, revisa que esté en la misma red Wi-Fi que el iPad.",
+				CKWakeTimeout]];
 	if(!_waking.count)
 	{
 		[_wakeTimer invalidate];
