@@ -8,6 +8,7 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
 |---|---|
 | `ck_console_rows.h`, `.c` | Las filas de la lista: junta lo que encontró la búsqueda (`CKConsoles.h`) con los registros guardados (`ck_registry.h`), decide el estado y la acción de cada consola y las ordena |
 | `CKConsoleService.h`, `.m` | Lo que las pantallas le piden a las consolas: la lista, despertar, registrar y el registro para la sesión |
+| `CKLanConsoleService.h`, `.m` | Las consolas de la red (A6.2): búsqueda, registros guardados y despertar |
 | `CKMockConsoleService.h`, `.m` | Consolas simuladas (A6.1), para probar cada pantalla sin consola |
 | `ck_ui_settings.h`, `.c` | Los ajustes que ofrece la app sobre el modelo de C5 y lo que acepta del archivo |
 | `CKSettingsStore.h`, `.m` | Los ajustes guardados en el iPad (A6.4) |
@@ -27,14 +28,24 @@ La lógica que se puede probar sin iPad está en C portable con pruebas en Linux
   - **Registrar**, encendida y sin registrar: abre el registro.
   - Sin botón: una consola sin registrar en reposo (hay que encenderla para registrarla) o una registrada sin IP conocida. Un toque explica qué hacer.
 - **Registrar.** El Account ID de PSN (en base64, 12 caracteres que terminan en `=`, o en decimal) y el PIN de 8 cifras que muestra la PS5 en *Ajustes › Sistema › Remote Play › Vincular dispositivo*. Antes de mandar nada revisa que los dos se puedan leer. Si la consola dice que no, muestra qué corregir (`ck_regist_result_string()`), y con un PIN equivocado borra el campo para escribir otro. Al terminar regresa a la lista.
-- **Ajustes**, desde el botón de arriba a la derecha de la lista. Resolución (360p, 540p o 720p), cuadros por segundo (30 o 60) y bitrate (automático, o de 2 a 15 Mbps), los de `CKSettings` (C5); por defecto 540p a 30 fps con el bitrate del core, 6 Mbps. Cada cambio se guarda en el momento y vale desde la siguiente sesión; debajo de la lista se ven los actuales. *Volver a los valores por defecto* los regresa a esos.
+- **Ajustes**, desde el botón de arriba a la derecha de la lista. Resolución (360p, 540p o 720p), cuadros por segundo (30 o 60) y bitrate (automático, o de 2 a 15 Mbps), los de `CKSettings` (C5); por defecto 540p a 30 fps con el bitrate del core, 6 Mbps. Cada cambio se guarda en el momento y vale desde la siguiente sesión; debajo de la lista se ven los actuales. *Volver a los valores por defecto* los regresa a esos. En *Pruebas*, **Consolas simuladas** cambia la lista por las consolas inventadas.
 - **Juego.** Pantalla completa, sin barra de estado y sin que el iPad se apague solo. Un toque con tres dedos abre un menú para salir. El video, el audio, los controles y las métricas llegan con A6.5.
 
 Toda la app va en horizontal, hacia cualquiera de los dos lados.
 
+## La lista en la red (A6.2)
+
+`CKLanConsoleService` busca con el buscador de `CKConsoles.h`: una búsqueda por segundo a toda la red (broadcast), como `ckctl discover`. La lista se actualiza cada vez que una consola aparece, cambia de estado o deja de contestar 3 búsquedas seguidas. Solo busca mientras la lista está en pantalla y la app al frente.
+
+- **Registros.** Lee los de `/var/mobile/Library/Chiakiport/consoles.plist`, el plist de C5 que también escribe `ckctl regist`, cada vez que la lista vuelve a la pantalla, así ve lo que `ckctl` cambió mientras tanto. Si el archivo no se puede leer, lo dice debajo de la lista y nunca lo sobrescribe.
+- **IP nueva.** Si una consola registrada contesta desde otra IP (el router le dio otra), la guarda en el registro, como `ckctl`, para despertarla ahí la próxima vez. Antes de guardar vuelve a leer el archivo, para no borrar lo que `ckctl` haya escrito.
+- **Primera búsqueda.** Al abrir la lista espera hasta 2 s a que contesten, para no mostrar un momento como "no contesta" a las registradas que sí están.
+- **Despertar** manda la señal de `ck_console_wakeup()` con el registro guardado a la IP donde contestó la consola, o a la última conocida.
+- **Registrar** desde la app llega con A6.3; mientras, dice que se use `ckctl regist`.
+
 ## Consolas simuladas (A6.1)
 
-Por ahora la lista sale de `CKMockConsoleService`, cuatro consolas inventadas, una de cada tipo de fila:
+Con **Consolas simuladas** encendido en Ajustes, la lista sale de `CKMockConsoleService`, cuatro consolas inventadas, una de cada tipo de fila:
 
 | Consola | Estado | Botón |
 |---|---|---|
@@ -63,11 +74,13 @@ Como `ios/cli`, enlaza el core de `build-ios-core/` y mbedTLS y Opus de `build-i
 
 ## Probar en el iPad
 
-La instalación y lo que se corre por SSH lo hace un agente desde la laptop (`ios/toolchain/deploy.ps1`). En el iPad:
+La instalación y lo que se corre por SSH lo hace un agente desde la laptop (`ios/toolchain/deploy.ps1`).
+
+### Con consolas simuladas (P2-7)
 
 1. Abre **Chiakiport** desde la pantalla de inicio (ícono azul con un triángulo de "play").
 2. Gira el iPad: la app se queda en horizontal y se voltea al girarlo 180°, pero no se pone en vertical.
-3. Debe salir la lista de la tabla de arriba, con "Consolas simuladas" y la versión abajo.
+3. En **Ajustes**, enciende **Consolas simuladas** y regresa: debe salir la lista de la tabla de arriba, con "Consolas simuladas" y la versión abajo.
 4. **Despertar** en *PS5 del cuarto*: sale "Despertando…" y unos 5 s después queda *encendida* con **Jugar**.
 5. **Despertar** en *PS5 de la oficina*: sale "Despertando…" y a los 45 s un aviso de que no se encendió.
 6. **Registrar** en *PS5-517*: escribe `1` como Account ID y `00000000` como PIN: debe decir que la consola rechazó el PIN y borrar el PIN. Escribe otras 8 cifras: debe decir "Registro listo." y volver a la lista, donde *PS5-517* ya tiene **Jugar**.
@@ -78,6 +91,18 @@ La instalación y lo que se corre por SSH lo hace un agente desde la laptop (`io
 10. Reinicia el iPad, vuelve a correr Carbon y abre la app: siguen igual. Al final, *Volver a los valores por defecto* deja 540p, 30 y Auto.
 
 Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal. Desde la laptop, `ssh ipad cat /var/mobile/Library/Chiakiport/settings.plist` muestra lo que quedó guardado (`bitrate_kbps` 8000 tras el paso 8; 0 es *Auto*). Que la app arrancara después de esa escritura (la hora de inicio del proceso en `ps`) dice que el paso 9 sí la cerró.
+
+### Con la PS5 (A6.2)
+
+Con la PS5 ya registrada con `ckctl regist` y en la misma red. Antes, el agente corre `ssh ipad ckctl list` para ver qué consolas hay registradas.
+
+1. En **Ajustes**, apaga **Consolas simuladas** si estaba encendido.
+2. Pon la PS5 en reposo (luz naranja) y abre la lista: en 2 o 3 s debe salir la PS5 *en reposo*, con su IP y **Despertar**.
+3. **Despertar**: "Despertando…" y entre 10 y 20 s después debe quedar *encendida*, con **Jugar** y el juego abierto si hay uno.
+4. Desde el control, pon la PS5 en reposo otra vez: en unos segundos la fila vuelve a *en reposo*.
+5. Apaga del todo la PS5 (mantén el botón de encendido hasta el segundo pitido) o desconéctala de la red: unos segundos después la fila dice *no contesta*. Enciéndela y vuelve a aparecer.
+
+Reporta qué paso no hizo lo que dice, con una foto si algo se ve mal.
 
 ## Pruebas en Linux
 

@@ -107,6 +107,21 @@ static const NSTimeInterval CKWakeTimeout = 45;
 		[_service start];
 }
 
+- (void)setService:(id<CKConsoleService>)service
+{
+	if(service == _service)
+		return;
+	if(_visible)
+		[_service stop];
+	_service.delegate = nil;
+	_service = service;
+	_service.delegate = self;
+	[_waking removeAllObjects];
+	if(_visible)
+		[_service start];
+	[self consoleServiceDidChange:_service];
+}
+
 - (void)openSettings:(id)sender
 {
 	[self.navigationController pushViewController:[[CKSettingsViewController alloc] initWithStore:_settings]
@@ -123,7 +138,9 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	NSDictionary *info = [NSBundle mainBundle].infoDictionary;
 	NSMutableArray<NSString *> *lines = [NSMutableArray array];
 	if(_service.simulated)
-		[lines addObject:@"Consolas simuladas: nada de esta lista existe ni se guarda."];
+		[lines addObject:@"Consolas simuladas: nada de esta lista existe ni se guarda. Se apagan en Ajustes."];
+	if(_service.problem)
+		[lines addObject:_service.problem];
 	CKSettings settings = _settings.settings;
 	char summary[96];
 	ck_ui_settings_summary(&settings, summary, sizeof(summary));
@@ -131,6 +148,30 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	[lines addObject:[NSString stringWithFormat:@"Ajustes: %@", @(summary)]];
 	[lines addObject:[NSString stringWithFormat:@"Chiakiport %@ (%s)", info[@"CFBundleShortVersionString"], CK_GIT_COMMIT]];
 	_footerLabel.text = [lines componentsJoinedByString:@"\n"];
+	[self resizeFooter];
+}
+
+- (void)viewDidLayoutSubviews
+{
+	[super viewDidLayoutSubviews];
+	[self resizeFooter];
+}
+
+/** The footer grows with its lines: a problem can take several. */
+- (void)resizeFooter
+{
+	UIView *footer = self.tableView.tableFooterView;
+	CGFloat width = self.tableView.bounds.size.width - 48;
+	if(!footer || width < 100)
+		return;
+	CGFloat height = ceil([_footerLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)].height) + 24;
+	if(fabs(footer.frame.size.height - height) < 0.5)
+		return;
+	CGRect frame = footer.frame;
+	frame.size.height = height;
+	footer.frame = frame;
+	// A table only notices a new footer height when the footer is set again.
+	self.tableView.tableFooterView = footer;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +186,7 @@ static const NSTimeInterval CKWakeTimeout = 45;
 			[_waking removeObjectForKey:console.hostID];
 	[self.tableView reloadData];
 	self.tableView.backgroundView = _consoles.count ? nil : _emptyLabel;
+	[self updateFooter];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section

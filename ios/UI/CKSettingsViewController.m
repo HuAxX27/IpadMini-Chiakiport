@@ -7,6 +7,7 @@
 typedef NS_ENUM(NSInteger, CKSettingsSection) {
 	CKSettingsSectionVideo,
 	CKSettingsSectionReset,
+	CKSettingsSectionTesting,
 	CKSettingsSectionAbout,
 	CKSettingsSectionCount,
 };
@@ -26,6 +27,7 @@ static const CGFloat CKSegmentWidth = 420;
 	UISegmentedControl *_resolution;
 	UISegmentedControl *_fps;
 	UISegmentedControl *_bitrate;
+	UISwitch *_simulated;
 }
 
 - (instancetype)initWithStore:(CKSettingsStore *)store
@@ -63,6 +65,9 @@ static const CGFloat CKSegmentWidth = 420;
 	_bitrate = [self segmentsWithCount:CK_UI_BITRATE_COUNT label:^const char *(int i) {
 		return ck_ui_bitrate_label(ck_ui_bitrates_kbps[i]);
 	}];
+	_simulated = [[UISwitch alloc] init];
+	_simulated.onTintColor = CKThemeAccent();
+	[_simulated addTarget:self action:@selector(simulatedChanged:) forControlEvents:UIControlEventValueChanged];
 	[self showSettings];
 }
 
@@ -76,7 +81,26 @@ static const CGFloat CKSegmentWidth = 420;
 	// A bitrate set by hand in the file selects no segment; the footer says it.
 	index = ck_ui_bitrate_index(settings.bitrate_kbps);
 	_bitrate.selectedSegmentIndex = index < 0 ? UISegmentedControlNoSegment : index;
+	_simulated.on = _store.simulatedConsoles;
 	[self.tableView reloadData];
+}
+
+- (void)simulatedChanged:(UISwitch *)control
+{
+	NSError *error;
+	if(![_store updateSimulatedConsoles:control.on error:&error])
+		[self showSaveError:error];
+	[self showSettings];
+}
+
+- (void)showSaveError:(NSError *)error
+{
+	NSString *message = [NSString stringWithFormat:@"Se usan hasta que cierres la app, pero no quedaron guardados "
+		@"en %@: %@", _store.path, error.localizedDescription];
+	UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No pude guardar los ajustes"
+		message:message preferredStyle:UIAlertControllerStyleAlert];
+	[alert addAction:[UIAlertAction actionWithTitle:@"Entendido" style:UIAlertActionStyleDefault handler:nil]];
+	[self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)segmentChanged:(UISegmentedControl *)control
@@ -98,14 +122,7 @@ static const CGFloat CKSegmentWidth = 420;
 {
 	NSError *error;
 	if(![_store updateSettings:settings error:&error])
-	{
-		NSString *message = [NSString stringWithFormat:@"Se usan hasta que cierres la app, pero no quedaron guardados "
-			@"en %@: %@", _store.path, error.localizedDescription];
-		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No pude guardar los ajustes"
-			message:message preferredStyle:UIAlertControllerStyleAlert];
-		[alert addAction:[UIAlertAction actionWithTitle:@"Entendido" style:UIAlertActionStyleDefault handler:nil]];
-		[self presentViewController:alert animated:YES completion:nil];
-	}
+		[self showSaveError:error];
 	[self showSettings];
 }
 
@@ -137,6 +154,8 @@ static const CGFloat CKSegmentWidth = 420;
 	{
 		case CKSettingsSectionVideo:
 			return @"Video";
+		case CKSettingsSectionTesting:
+			return @"Pruebas";
 		case CKSettingsSectionAbout:
 			return @"Acerca de";
 		default:
@@ -146,6 +165,9 @@ static const CGFloat CKSegmentWidth = 420;
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
+	if(section == CKSettingsSectionTesting)
+		return @"Muestra cuatro consolas inventadas en vez de buscar en la red, para probar la app sin la PS5. "
+			@"Nada de lo que hagas con ellas se guarda.";
 	if(section != CKSettingsSectionVideo)
 		return nil;
 	CKSettings settings = _store.settings;
@@ -197,6 +219,10 @@ static const CGFloat CKSegmentWidth = 420;
 			cell.accessoryView = controls[(NSUInteger)indexPath.row];
 			break;
 		}
+		case CKSettingsSectionTesting:
+			cell.textLabel.text = @"Consolas simuladas";
+			cell.accessoryView = _simulated;
+			break;
 		case CKSettingsSectionReset:
 			cell.textLabel.text = @"Volver a los valores por defecto";
 			cell.textLabel.textColor = CKThemeAccent();

@@ -2,8 +2,8 @@
 
 // What the screens ask about consoles: the list, waking one up, registering
 // and the saved registration a session needs. CKMockConsoleService answers
-// with simulated consoles (A6.1); the one on the network comes with A6.2 and
-// A6.3, on top of CKConsoles.h and ck_registry.h.
+// with simulated consoles (A6.1), CKLanConsoleService with the ones on the
+// network (A6.2, A6.3), on top of CKConsoles.h and ck_registry.h.
 
 #import <Foundation/Foundation.h>
 
@@ -50,6 +50,9 @@ typedef void (^CKRegistCompletion)(CKRegistResult result, NSString *message);
 
 /** YES when the consoles are made up, to try the app without a console. */
 @property (nonatomic, readonly, getter=isSimulated) BOOL simulated;
+
+/** Why the list may be wrong or incomplete, for the user, e.g. the search could not start; nil when all is well. */
+@property (nonatomic, readonly, copy, nullable) NSString *problem;
 
 /** Searching costs battery and Wi-Fi: the list searches only while it is on screen. */
 - (void)start;

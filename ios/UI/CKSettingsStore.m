@@ -8,6 +8,7 @@ static NSString *const CKSettingsErrorDomain = @"CKSettingsErrorDomain";
 static NSString *const CKKeyResolution = @"resolution";
 static NSString *const CKKeyFps = @"fps";
 static NSString *const CKKeyBitrate = @"bitrate_kbps";
+static NSString *const CKKeySimulated = @"simulated_consoles";
 
 /** The number under key, or -1 when it is missing or not a number. */
 static int64_t CKNumber(NSDictionary *dict, NSString *key)
@@ -46,6 +47,8 @@ static int64_t CKNumber(NSDictionary *dict, NSString *key)
 		return self;
 	}
 	NSDictionary *dict = plist;
+	id simulated = dict[CKKeySimulated];
+	_simulatedConsoles = [simulated isKindOfClass:[NSNumber class]] && [(NSNumber *)simulated boolValue];
 	if(!ck_ui_settings_from_values(CKNumber(dict, CKKeyResolution), CKNumber(dict, CKKeyFps),
 		CKNumber(dict, CKKeyBitrate), &_settings))
 		NSLog(@"Chiakiport: %@ tiene valores que no ofrezco; esos van por defecto", path);
@@ -63,10 +66,22 @@ static int64_t CKNumber(NSDictionary *dict, NSString *key)
 	}
 	_settings = settings;
 	[[NSNotificationCenter defaultCenter] postNotificationName:CKSettingsDidChangeNotification object:self];
+	return [self save:error];
+}
 
+- (BOOL)updateSimulatedConsoles:(BOOL)simulated error:(NSError **)error
+{
+	_simulatedConsoles = simulated;
+	[[NSNotificationCenter defaultCenter] postNotificationName:CKSettingsDidChangeNotification object:self];
+	return [self save:error];
+}
+
+- (BOOL)save:(NSError **)error
+{
 	int64_t height, fps, bitrate;
-	ck_ui_settings_to_values(&settings, &height, &fps, &bitrate);
-	NSDictionary *dict = @{ CKKeyResolution: @(height), CKKeyFps: @(fps), CKKeyBitrate: @(bitrate) };
+	ck_ui_settings_to_values(&_settings, &height, &fps, &bitrate);
+	NSDictionary *dict = @{ CKKeyResolution: @(height), CKKeyFps: @(fps), CKKeyBitrate: @(bitrate),
+		CKKeySimulated: @(_simulatedConsoles) };
 	NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict format:NSPropertyListXMLFormat_v1_0
 		options:0 error:error];
 	if(!data)
