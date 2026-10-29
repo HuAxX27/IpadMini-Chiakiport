@@ -2,12 +2,15 @@
 # Builds and runs the A4 audio tests on Linux.
 # Usage: ./ios/tests/audio_tests.sh [captura.opus ...]
 #
-#   1. tone_test (the test tone of ckaudio, ios/Audio/ck_audio_tone.c) and
-#      decoder_test (the Opus decoder and the Ogg Opus reader), with
-#      AddressSanitizer and UBSan when the compiler has them. make_opus writes
-#      a recording like a PS5's through ios/Bridge/ck_recorder.c, and
-#      check_decode.py has opus_wav decode it, and every capture given (the
-#      .opus of cksession -g), to WAV, and compares it with ffmpeg's.
+#   1. tone_test (the test tone of ckaudio, ios/Audio/ck_audio_tone.c),
+#      decoder_test (the Opus decoder and the Ogg Opus reader), buffer_test
+#      (the jitter buffer) and player_test (the audio player of contract C3
+#      under a simulated network, also with every capture given), with
+#      AddressSanitizer and UBSan when the compiler has them, and buffer_test
+#      again with ThreadSanitizer. make_opus writes a recording like a PS5's
+#      through ios/Bridge/ck_recorder.c, and check_decode.py has opus_wav
+#      decode it, and every capture given (the .opus of cksession -g), to WAV,
+#      and compares it with ffmpeg's.
 #   2. The same tests built for armv7 (Cortex-A9 and a 32-bit size_t, like the
 #      iPad mini's A5) and run under qemu-arm.
 #   3. The ckaudio package built with Theos, when THEOS points at the toolchain
@@ -28,6 +31,9 @@ CFLAGS=(-std=c11 -Wall -Wextra -Wpedantic -Werror -I"$ROOT/lib/include" -I"$ROOT
 CORE_SRC=("$ROOT/lib/src/log.c" "$ROOT/lib/src/redact.c")
 TONE_SRC=("$ROOT/ios/tests/audio/tone_test.c" "$ROOT/ios/Audio/ck_audio_tone.c")
 DECODER_SRC=("$ROOT/ios/Audio/ck_audio_decoder.c" "$ROOT/ios/Audio/ck_ogg_opus.c")
+BUFFER_SRC=("$ROOT/ios/Audio/ck_audio_buffer.c" "$ROOT/ios/tests/audio/audio_click.c")
+# The player as it is, on a fake AudioQueue output and audio session.
+PLAYER_SRC=("$ROOT/ios/Audio/ck_audio_player.c" "$ROOT/ios/tests/audio/fake_audio.c" "${BUFFER_SRC[@]}" "${DECODER_SRC[@]}")
 CC="${CC:-cc}"
 mkdir -p "$BUILD"
 
@@ -49,6 +55,10 @@ build() {
 		-o "$BUILD/opus_wav$suffix"
 	"$@" "${CFLAGS[@]}" "$ROOT/ios/tests/audio/make_opus.c" "$ROOT/ios/Bridge/ck_recorder.c" "${core[@]}" -lopus -lm \
 		-o "$BUILD/make_opus$suffix"
+	"$@" "${CFLAGS[@]}" "$ROOT/ios/tests/audio/buffer_test.c" "${BUFFER_SRC[@]}" "${core[@]}" -lm -pthread \
+		-o "$BUILD/buffer_test$suffix"
+	"$@" "${CFLAGS[@]}" "$ROOT/ios/tests/audio/player_test.c" "${PLAYER_SRC[@]}" "${core[@]}" -lopus -lm -pthread \
+		-o "$BUILD/player_test$suffix"
 }
 
 # run SUFFIX [emulator...]: runs the tests built with build SUFFIX.
@@ -56,6 +66,8 @@ run() {
 	local suffix="$1"
 	shift
 	"$@" "$BUILD/tone_test$suffix"
+	"$@" "$BUILD/buffer_test$suffix"
+	"$@" "$BUILD/player_test$suffix" "${CAPTURES[@]}"
 	rm -f "$BUILD/recording$suffix.opus" "$BUILD/recording$suffix.h264"
 	"$@" "$BUILD/make_opus$suffix" "$BUILD/recording$suffix" 3 50
 	"$@" "$BUILD/decoder_test$suffix" "$BUILD/recording$suffix.opus"
@@ -72,6 +84,21 @@ else
 fi
 build "" "$CC" "${SAN[@]}"
 run ""
+
+echo "== jitter buffer under ThreadSanitizer ($CC)"
+if echo 'int main(void){return 0;}' | "$CC" -fsanitize=thread -x c - -o "$BUILD/probe" 2>/dev/null; then
+	tsan_core=()
+	for src in "${CORE_SRC[@]}"; do
+		obj="$BUILD/$(basename "$src" .c)_tsan.o"
+		"$CC" -std=c11 -g -O1 -fsanitize=thread -I"$ROOT/lib/include" -c "$src" -o "$obj"
+		tsan_core+=("$obj")
+	done
+	"$CC" "${CFLAGS[@]}" -g -O1 -fsanitize=thread "$ROOT/ios/tests/audio/buffer_test.c" "${BUFFER_SRC[@]}" \
+		"${tsan_core[@]}" -lm -pthread -o "$BUILD/buffer_test_tsan"
+	"$BUILD/buffer_test_tsan"
+else
+	echo "SKIP: no ThreadSanitizer in $CC"
+fi
 
 echo "== armv7 under qemu-arm"
 ARMHF_LIB=/usr/lib/arm-linux-gnueabihf

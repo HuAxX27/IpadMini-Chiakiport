@@ -1,11 +1,13 @@
-# ckaudio (A4.2) tries the iPad's audio output from a shell, without the app:
+# ckaudio (A4.2, A4.3) tries the iPad's audio from a shell, without the app:
 # "ckaudio tono" plays a test tone through the AudioQueue output and the audio
-# session the player uses. Installs to /usr/bin. See ../README.md.
+# session the player uses, and "ckaudio opus" plays a recording through the
+# player itself. Installs to /usr/bin. See ../README.md.
 #
 #   make package FINALPACKAGE=1    # .deb in packages/
 #
 # It links chiaki-lib for its log only, as ios/toolchain/ci-ipad.sh builds it
-# (CK_CORE_BUILD, from core-check.sh), like ios/cli.
+# (CK_CORE_BUILD, from core-check.sh), like ios/cli, and Opus from
+# CK_IOS_PREFIX (build-deps.sh).
 TARGET := iphone:clang:9.3:9.0
 ARCHS := armv7
 # Cydia's dpkg on iOS 9 is old: gzip is the one compression it surely reads.
@@ -17,8 +19,7 @@ CK_IOS_PREFIX ?= $(CK_ROOT)/build-ios-deps/prefix
 
 include $(THEOS)/makefiles/common.mk
 
-# The output, the session and the tone live in ios/Audio, where the player
-# uses them too. Theos names each object after the source path it is given, so
+# The player and its parts live in ios/Audio, where the app uses them too. Theos names each object after the source path it is given, so
 # a ../ path would leave build files outside .theos: each shared_* file
 # includes one of them.
 TOOL_NAME = ckaudio
@@ -29,10 +30,11 @@ CK_CFLAGS = -Wall -Wextra -Werror -Wunguarded-availability \
 	-DCHIAKI_LIB_ENABLE_MBEDTLS -DCHIAKI_DISABLE_HOLEPUNCH \
 	-I../.. -I$(CK_ROOT)/lib/include -I$(CK_IOS_PREFIX)/include
 
-ckaudio_FILES = main.m shared_ck_audio_output_aq.c shared_ck_audio_session.m shared_ck_audio_tone.c
+ckaudio_FILES = main.m shared_ck_audio_output_ios.c shared_ck_audio_session.m shared_ck_audio_tone.c \
+	shared_ck_audio_player.c shared_ck_audio_buffer.c shared_ck_audio_decoder.c shared_ck_ogg_opus.c
 ckaudio_CFLAGS = -fobjc-arc $(CK_CFLAGS)
 ckaudio_FRAMEWORKS = Foundation AVFoundation AudioToolbox
-ckaudio_LDFLAGS = $(CK_CORE_BUILD)/chiaki/lib/libchiaki.a
+ckaudio_LDFLAGS = $(CK_CORE_BUILD)/chiaki/lib/libchiaki.a $(CK_IOS_PREFIX)/lib/libopus.a
 ckaudio_INSTALL_PATH = /usr/bin
 
 include $(THEOS_MAKE_PATH)/tool.mk

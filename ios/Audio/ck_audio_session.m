@@ -14,6 +14,8 @@ static pthread_mutex_t session_mutex = PTHREAD_MUTEX_INITIALIZER;
 static CKAudioSessionCallback session_callback;
 static void *session_user;
 static ChiakiLog *session_log;
+static double session_rate;
+static double session_io_buffer_s;
 static NSArray *session_observers;
 
 /** Calls the user's callback unless ck_audio_session_end() came first. */
@@ -31,8 +33,8 @@ static void log_error(ChiakiLog *log, const char *what, NSError *error)
 		error ? error.localizedDescription.UTF8String : "no reason given");
 }
 
-bool ck_audio_session_begin(ChiakiLog *log, double preferred_rate, double preferred_io_buffer_s,
-	CKAudioSessionCallback callback, void *user)
+/** The category and the preferences; after the audio server restarts they are set again. */
+static bool configure(ChiakiLog *log, double preferred_rate, double preferred_io_buffer_s)
 {
 	AVAudioSession *session = [AVAudioSession sharedInstance];
 	NSError *error = nil;
@@ -48,11 +50,23 @@ bool ck_audio_session_begin(ChiakiLog *log, double preferred_rate, double prefer
 	if(preferred_io_buffer_s > 0 && ![session setPreferredIOBufferDuration:preferred_io_buffer_s error:&error])
 		CHIAKI_LOGW(log, "Audio session: preferred buffer %.1f ms refused: %s", preferred_io_buffer_s * 1000.0,
 			error.localizedDescription.UTF8String);
+	return true;
+}
+
+bool ck_audio_session_begin(ChiakiLog *log, double preferred_rate, double preferred_io_buffer_s,
+	CKAudioSessionCallback callback, void *user)
+{
+	AVAudioSession *session = [AVAudioSession sharedInstance];
+	NSError *error = nil;
+	if(!configure(log, preferred_rate, preferred_io_buffer_s))
+		return false;
 
 	pthread_mutex_lock(&session_mutex);
 	session_callback = callback;
 	session_user = user;
 	session_log = log;
+	session_rate = preferred_rate;
+	session_io_buffer_s = preferred_io_buffer_s;
 	pthread_mutex_unlock(&session_mutex);
 
 	NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
@@ -84,7 +98,16 @@ bool ck_audio_session_begin(ChiakiLog *log, double preferred_rate, double prefer
 	id reset = [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:session queue:nil
 		usingBlock:^(NSNotification *note) {
 			(void)note;
-			notify(CK_AUDIO_SESSION_MEDIA_RESET);
+			// The session's setup went with the server: set it up and activate it again, then the queue can be made.
+			pthread_mutex_lock(&session_mutex);
+			ChiakiLog *log = session_log;
+			bool ok = log && configure(log, session_rate, session_io_buffer_s);
+			NSError *activate_error = nil;
+			if(ok && ![[AVAudioSession sharedInstance] setActive:YES error:&activate_error])
+				log_error(log, "setActive after the audio server restarted", activate_error);
+			pthread_mutex_unlock(&session_mutex);
+			if(ok)
+				notify(CK_AUDIO_SESSION_MEDIA_RESET);
 		}];
 	session_observers = @[ interruption, route, reset ];
 
