@@ -4,8 +4,9 @@
 // (one search a second, by broadcast, the same as ckctl discover), reads the
 // saved registrations from the C5 plist that ckctl also writes, and wakes
 // registered consoles up. When a registered console answers from a new IP, it
-// keeps that IP in the plist, as ckctl does. It never writes over a
-// registration file it could not read.
+// keeps that IP in the plist, as ckctl does. A6.3: it registers with a console
+// through ck_regist and saves the registration in the same plist. It never
+// writes over a registration file it could not read.
 
 #import "CKConsoleService.h"
 

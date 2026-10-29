@@ -292,7 +292,9 @@ static const NSTimeInterval CKWakeTimeout = 45;
 	for(NSString *hostID in [_waking allKeys])
 		if(-[_waking[hostID] timeIntervalSinceNow] > CKWakeTimeout)
 			[self wakeOf:hostID failedWithMessage:[NSString stringWithFormat:@"Pasaron %.0f s y sigue sin encenderse. "
-				@"Revisa que esté conectada a la corriente y a la misma red Wi-Fi.", CKWakeTimeout]];
+				@"Solo se despierta desde el reposo (luz naranja): si la apagaste del todo, enciéndela con su botón o con "
+				@"el botón PS del control. Si estaba en reposo, revisa que esté en la misma red Wi-Fi que el iPad.",
+				CKWakeTimeout]];
 	if(!_waking.count)
 	{
 		[_wakeTimer invalidate];

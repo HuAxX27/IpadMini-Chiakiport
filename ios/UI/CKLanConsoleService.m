@@ -2,6 +2,8 @@
 
 #import "CKLanConsoleService.h"
 
+#include "ck_ui_regist.h"
+
 #include <string.h>
 
 /**
@@ -12,6 +14,7 @@ static const NSTimeInterval CKFirstSearchSeconds = 2.0;
 
 @interface CKLanConsoleService ()
 - (void)browserFound:(NSData *)consoles generation:(NSUInteger)generation;
+- (void)registFinished:(CKRegistOutcome)outcome;
 @end
 
 @implementation CKLanConsoleService
@@ -34,6 +37,10 @@ static const NSTimeInterval CKFirstSearchSeconds = 2.0;
 	NSString *_searchProblem;
 	NSString *_registryProblem;
 	dispatch_queue_t _queue;
+	/** The registration running, at most one. */
+	CKRegist *_regist;
+	CKRegistCompletion _registCompletion;
+	NSString *_registAddress;
 }
 
 @synthesize delegate = _delegate;
@@ -48,6 +55,17 @@ static void browser_cb(const CKConsole *consoles, size_t count, void *user)
 	NSData *data = [NSData dataWithBytes:consoles length:count * sizeof(CKConsole)];
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[weak browserFound:data generation:generation];
+	});
+}
+
+// The registration's thread. The registration keeps the service alive
+// (CFBridgingRetain in registerConsole) until its end reaches the main thread.
+static void regist_cb(const CKRegistOutcome *outcome, void *user)
+{
+	CKLanConsoleService *service = CFBridgingRelease(user);
+	CKRegistOutcome copy = *outcome;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[service registFinished:copy];
 	});
 }
 
@@ -239,11 +257,92 @@ static void browser_cb(const CKConsole *consoles, size_t count, void *user)
                     pin:(uint32_t)pin
              completion:(CKRegistCompletion)completion
 {
-	completion(CK_REGIST_FAILED, @"El registro desde la app llega con A6.3. Mientras, usa ckctl regist por SSH.");
+	if(_regist)
+	{
+		completion(CK_REGIST_FAILED, @"Ya hay un registro en curso.");
+		return;
+	}
+	NSString *address = console.address;
+	if(!address.length)
+	{
+		completion(CK_REGIST_NOT_FOUND, @"No sé la IP de la consola. Enciéndela y búscala otra vez.");
+		return;
+	}
+	CKRegistRequest request;
+	memset(&request, 0, sizeof(request));
+	request.host = address.UTF8String;
+	request.target = console.row.target;
+	memcpy(request.psn_account_id, accountID, sizeof(request.psn_account_id));
+	request.pin = pin;
+	void *user = (void *)CFBridgingRetain(self);
+	ChiakiErrorCode err = ck_regist_start(&_regist, &_log, &request, regist_cb, user);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CFBridgingRelease(user);
+		_regist = NULL;
+		completion(CK_REGIST_FAILED, [NSString stringWithFormat:@"No pude empezar el registro (%s).",
+			chiaki_error_string(err)]);
+		return;
+	}
+	_registCompletion = [completion copy];
+	_registAddress = [address copy];
+}
+
+- (void)registFinished:(CKRegistOutcome)outcome
+{
+	// The callback already returned: this only waits for its thread to end.
+	ck_regist_free(_regist);
+	_regist = NULL;
+	CKRegistCompletion completion = _registCompletion;
+	NSString *address = _registAddress;
+	_registCompletion = nil;
+	_registAddress = nil;
+	if(outcome.result != CK_REGIST_SUCCESS)
+	{
+		char message[CK_UI_REGIST_MESSAGE_SIZE];
+		ck_ui_regist_message(&outcome, message, sizeof(message));
+		completion(outcome.result, @(message));
+		return;
+	}
+	NSString *problem = [self saveRegistration:&outcome.registered_host address:address];
+	if(problem)
+	{
+		completion(CK_REGIST_FAILED, problem);
+		return;
+	}
+	[self rebuild];
+	completion(CK_REGIST_SUCCESS, @(ck_regist_result_string(CK_REGIST_SUCCESS)));
+}
+
+/** Saves the registration as ckctl regist does. nil when saved, else why not. */
+- (NSString *)saveRegistration:(const ChiakiRegisteredHost *)host address:(NSString *)address
+{
+	CKRegistry saved;
+	ChiakiErrorCode err = CHIAKI_ERR_SUCCESS;
+	switch(ck_ui_regist_save(_registryPath.fileSystemRepresentation, host, address.UTF8String, &saved, &err))
+	{
+		case CK_UI_REGIST_SAVED:
+			_registry = saved;
+			_registryReadable = YES;
+			_registryProblem = nil;
+			return nil;
+		case CK_UI_REGIST_UNREADABLE:
+			return [NSString stringWithFormat:@"La consola aceptó el registro, pero no pude leer %@ (%s) y no lo "
+				@"sobrescribo, así que no quedó guardado. Revisa el archivo y vuelve a registrarla.", _registryPath,
+				chiaki_error_string(err)];
+		case CK_UI_REGIST_FULL:
+			return [NSString stringWithFormat:@"Ya hay %d consolas registradas en este iPad. Borra una con ckctl "
+				@"forget y vuelve a registrar esta.", CK_REGISTRY_MAX];
+		default:
+			return [NSString stringWithFormat:@"La consola aceptó el registro, pero no pude guardarlo en %@ (%s). "
+				@"Vuelve a registrarla.", _registryPath, chiaki_error_string(err)];
+	}
 }
 
 - (void)cancelRegistration
 {
+	// The callback still comes, with CK_REGIST_CANCELED.
+	ck_regist_cancel(_regist);
 }
 
 - (BOOL)getRegisteredHost:(ChiakiRegisteredHost *)host forConsole:(CKConsoleItem *)console
